@@ -12,13 +12,6 @@
     pgversion: "16"
 
   tasks:
-    - name: Install Docker Python module (RHEL/CentOS)
-      ansible.builtin.dnf:
-        name: python3-docker
-        state: present
-        enablerepo: epel
-      when: ansible_os_family == "RedHat"
-      tags: docker
     - name: Install Docker prerequisites (Debian/Ubuntu)
       package:
         name:
@@ -84,25 +77,21 @@
         enabled: true
 
     - name: Pull PMM Server Docker image
-      docker_image:
-        name: "perconalab/pmm-server:{{ pmm_server_version }}"
-        source: pull
+      shell: |
+        docker pull perconalab/pmm-server:{{ pmm_server_version }}
+      args:
+        creates: /var/lib/docker/images/perconalab/pmm-server:{{ pmm_server_version }}
 
     - name: Create PMM data volume if missing
-      docker_volume:
-        name: pmm-data
-        state: present
+      shell: |
+        docker volume create pmm-data || true
+      changed_when: false
 
     - name: Run PMM Server container
-      docker_container:
-        name: pmm-server
-        image: "perconalab/pmm-server:{{ pmm_server_version }}"
-        state: started
-        restart_policy: always
-        ports:
-          - "443:443"
-        volumes:
-          - "pmm-data:/srv"
+      shell: |
+        docker run -d --name pmm-server --restart always -p 443:443 -v pmm-data:/srv perconalab/pmm-server:{{ pmm_server_version }}
+      args:
+        creates: /var/lib/docker/containers/$(docker ps -aqf name=pmm-server)
 
     - name: Wait for PMM Server to become available
       uri:

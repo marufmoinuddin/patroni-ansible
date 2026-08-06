@@ -103,15 +103,6 @@
       ignore_errors: true
       when: ansible_os_family == "Debian"
 
-    - name: Install python3-docker on pgBackRest node (for docker module)
-      ansible.builtin.dnf:
-        name: python3-docker
-        state: present
-        enablerepo: epel
-      when: ansible_os_family == "RedHat"
-      delegate_to: "{{ groups['pg_backrest'][0] }}"
-      run_once: true
-
     - name: Remove remaining PostgreSQL directories (Debian/Ubuntu)
       ansible.builtin.file:
         path: "{{ item }}"
