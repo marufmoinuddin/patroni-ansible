@@ -31,6 +31,17 @@
         state: directory
         mode: '0755'
 
+    - name: Remove stale ETCD data (fresh cluster bootstrap)
+      ansible.builtin.find:
+        paths: "{{ etcd_data_dir }}"
+        file_type: any
+      register: etcd_stale
+
+    - name: Wipe ETCD data directory contents
+      ansible.builtin.shell: "rm -rf {{ etcd_data_dir }}/*"
+      when: etcd_stale.files | length > 0
+      changed_when: true
+
     - name: Create systemd service file
       ansible.builtin.copy:
         dest: /etc/systemd/system/etcd.service

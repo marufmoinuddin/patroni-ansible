@@ -212,6 +212,7 @@
       ansible.builtin.dnf:
         name: "{{ percona_repo_rpm_url }}"
         state: present
+        disable_gpg_check: true  # key is installed by the RPM itself
       when: ansible_os_family == "RedHat"
 
     - name: Enable Percona PostgreSQL 16 repository (RHEL/CentOS)
