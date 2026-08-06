@@ -5,7 +5,7 @@
   gather_facts: true
   vars:
     scope: "kyc"
-    pgversion: "12"
+    pgversion: "16"
     repo_path: "/postgres/pgbackup"
     data_dir: "/postgres/data/{{ pgversion }}/{{ scope }}"
     ssh_dir: "/var/lib/postgresql/.ssh"
@@ -184,7 +184,7 @@
   become: true
   vars:
     scope: "kyc"
-    pgversion: "12"
+    pgversion: "16"
     data_dir: "/postgres/data/{{ pgversion }}/{{ scope }}"
     ssh_dir: "/var/lib/postgresql/.ssh"
 

@@ -15,9 +15,9 @@
         set_fact:
           node_name: "{{ ansible_hostname }}"
           node_ip: "{{ ansible_default_ipv4.address }}"
-          base_data_dir: "/postgres/data/12"
-          data_dir: "/postgres/data/12/kyc"
-          pg_bin_dir: "/usr/lib/postgresql/12/bin"
+          base_data_dir: "/postgres/data/16"
+          data_dir: "/postgres/data/16/kyc"
+          pg_bin_dir: "/usr/lib/postgresql/16/bin"
           namespace: "percona_lab"
           scope: "kyc"
           is_primary: "{{ inventory_hostname == groups['pg_nodes'][0] }}"
@@ -36,17 +36,17 @@
       # PostgreSQL Cluster Removal  
       - name: Remove the PostgreSQL cluster
         shell: |
-          sudo pg_dropcluster 12 "{{ scope }}"
+          sudo pg_dropcluster 16 "{{ scope }}"
         ignore_errors: yes
 
       # PostgreSQL Initialization - ONLY ON PRIMARY
       - name: Create PostgreSQL cluster using pg_createcluster on primary node only
-        command: sudo pg_createcluster 12 {{ scope }} -d {{ data_dir }}
+        command: sudo pg_createcluster 16 {{ scope }} -d {{ data_dir }}
 
       # Stop the PostgreSQL cluster 
       - name: Stop the PostgreSQL cluster
         shell: |
-          sudo /usr/bin/pg_ctlcluster "12-{{ scope }}" stop
+          sudo /usr/bin/pg_ctlcluster "16-{{ scope }}" stop
         ignore_errors: yes
 
       - name: Remove all configuration and data files

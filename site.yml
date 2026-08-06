@@ -1,0 +1,10 @@
+---
+# Master playbook to deploy the complete Percona Patroni + Pgpool-II HA cluster
+# Run with: ansible-playbook -i hosts site.yml --ask-become-pass
+
+- import_playbook: 01_Install_Percona.yml
+- import_playbook: 02_Configure_Etcd.yml
+- import_playbook: 03_Configure_Patroni.yml
+- import_playbook: 04_Configure_Pgpool.yml
+- import_playbook: 05_Configure_Pgbackrest.yml
+- import_playbook: 06_Install_Pmm_Monitoring.yml

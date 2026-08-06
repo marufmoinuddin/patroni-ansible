@@ -51,24 +51,18 @@
       loop:
         - patroni
         - postgresql
+        - pgpool2
       ignore_errors: true
 
     - name: Purge Patroni and PostgreSQL packages
       ansible.builtin.apt:
         name: 
           - percona-patroni
-          - percona-postgresql-12
-          - postgresql-12
+          - percona-postgresql-16
+          - postgresql-16
         state: absent
         purge: yes
       ignore_errors: true
-
-    - name: Purge Percona HAProxy package if present
-      ansible.builtin.apt:
-        name: percona-haproxy
-        state: absent
-        purge: yes
-      ignore_errors: true 
 
     - name: Purge pgbackrest package if present
       ansible.builtin.apt:
@@ -86,7 +80,7 @@
         - /etc/postgresql
         - /var/log/postgresql
       ignore_errors: true
-    
+   
     - name: Remove pgbackrest directories
       ansible.builtin.file:
         path: "{{ item }}"
@@ -97,14 +91,6 @@
         - /var/log/pgbackrest
         - /var/lib/pgbackrest
       ignore_errors: true
-
-    - name: Remove HAProxy directories
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - /etc/haproxy
-        - /var/log/haproxy
 
 - name: Install Percona Distribution and dependencies on all nodes
   hosts: all
@@ -136,7 +122,7 @@
 
     - name: Enable the repository for Percona PostgreSQL
       ansible.builtin.command:
-        cmd: percona-release setup ppg12
+        cmd: percona-release setup ppg16
 
 - name: Install pgbackrest on PG Backrest Node
   hosts: pg_backrest
@@ -151,21 +137,6 @@
         name: percona-pgbackrest
         state: present
 
-- name: Install HAProxy on HAProxy Node
-  hosts: ha_proxy
-  become: true
-  tasks:
-    - name: Ensure apt cache is up to date
-      ansible.builtin.apt:
-        update_cache: yes
-
-    - name: Install HAProxy package
-      ansible.builtin.apt:
-        name: haproxy
-        state: present
-
-
-
 - name: Install ETCD and Percona Distribution Install Patroni and PostgreSQL packages on PostgreSQL Nodes
   hosts: pg_nodes
   become: true
@@ -176,7 +147,7 @@
 
     - name: Install Percona Distribution for PostgreSQL packages
       ansible.builtin.apt:
-        name: percona-postgresql-12
+        name: percona-postgresql-16
         state: present
 
     - name: Install Python and auxiliary packages
@@ -206,9 +177,10 @@
         - etcd
         - patroni
         - postgresql
+        - pgpool2
 
     - name: Remove the existing Postgres data directory
       ansible.builtin.file:
-        path: /var/lib/postgresql/12/main
+        path: /var/lib/postgresql/16/main
         state: absent
         force: yes

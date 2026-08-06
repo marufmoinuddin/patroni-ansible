@@ -8,7 +8,7 @@
     pmm_admin_password: "NewAdminPassword123"  # Change this to a secure password for PMM admin
     pmm_server_port: 443
     scope: "kyc"
-    pgversion: "12"
+    pgversion: "16"
 
   tasks:
     - name: Install Docker prerequisites
@@ -109,11 +109,11 @@
   become: true
   gather_facts: true
   vars:
-    pgversion: "12"
+    pgversion: "16"
   tasks:
-    - name: Install percona-pg-stat-monitor12 package
+    - name: Install percona-pg-stat-monitor16 package
       package:
-        name: percona-pg-stat-monitor12
+        name: percona-pg-stat-monitor16
         state: present
       
     - name: Install PMM Client repository
@@ -145,7 +145,7 @@
     pmm_admin_password: "NewAdminPassword123"  # Should match the password used above
     pmm_server_port: 443
     scope: "kyc"
-    pgversion: "12"
+    pgversion: "16"
     pg_data_dir: "/postgres/data/{{ pgversion }}/{{ scope }}"
 
   tasks:

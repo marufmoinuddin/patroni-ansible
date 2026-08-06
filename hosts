@@ -8,5 +8,4 @@ percona-pgbackrest ansible_host=192.168.122.153 ansible_user=root
 
 [all:children]
 pg_nodes
-ha_proxy
 pg_backrest
