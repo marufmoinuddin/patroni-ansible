@@ -91,7 +91,10 @@
       shell: |
         docker run -d --name pmm-server --restart always -p 443:443 -v pmm-data:/srv perconalab/pmm-server:{{ pmm_server_version }}
       args:
-        creates: /var/lib/docker/containers/$(docker ps -aqf name=pmm-server)
+        creates: /var/lib/docker/containers/$(docker ps -aqf name=pmm-server | head -1)
+      register: pmm_run
+      ignore_errors: true
+      changed_when: pmm_run.rc == 0
 
     - name: Wait for PMM Server to become available
       uri:
