@@ -1,0 +1,115 @@
+---
+- name: Configure ETCD on PostgreSQL nodes
+  hosts: pg_nodes
+  become: true
+  gather_facts: true
+
+  vars:
+    etcd_token: 'PostgreSQL_HA_Cluster_1'
+    etcd_data_dir: '/var/lib/etcd'
+    etcd_nodes: "{{ groups['pg_nodes'] | map('extract', hostvars) | map(attribute='ansible_hostname') | list }}"
+    etcd_ips: "{{ groups['pg_nodes'] | map('extract', hostvars) | map(attribute='ansible_default_ipv4.address') | list }}"
+    etcd_endpoints: "{% for ip in etcd_ips %}http://{{ ip }}:2379{% if not loop.last %},{% endif %}{% endfor %}"
+
+  tasks:
+    - name: Install ETCD package
+      apt:
+        name: etcd
+        state: present
+
+    - name: Create ETCD data directory
+      file:
+        path: "{{ etcd_data_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Create systemd service file
+      copy:
+        dest: /etc/systemd/system/etcd.service
+        content: |
+          [Unit]
+          Description=etcd key-value store
+          Documentation=https://etcd.io/docs/
+          After=network.target
+
+          [Service]
+          Environment="TOKEN={{ etcd_token }}"
+          Environment="CLUSTER_STATE=new"
+          Environment="THIS_NAME={{ ansible_hostname }}"
+          Environment="THIS_IP={{ ansible_default_ipv4.address }}"
+          Environment="CLUSTER={% for host in groups['pg_nodes'] %}{{ hostvars[host]['ansible_hostname'] }}=http://{{ hostvars[host]['ansible_default_ipv4']['address'] }}:2380{% if not loop.last %},{% endif %}{% endfor %}"
+
+          ExecStart=/usr/bin/etcd \
+            --data-dir={{ etcd_data_dir }} \
+            --name {{ ansible_hostname }} \
+            --initial-advertise-peer-urls http://{{ ansible_default_ipv4.address }}:2380 \
+            --listen-peer-urls http://{{ ansible_default_ipv4.address }}:2380 \
+            --advertise-client-urls http://{{ ansible_default_ipv4.address }}:2379 \
+            --listen-client-urls http://{{ ansible_default_ipv4.address }}:2379 \
+            --initial-cluster ${CLUSTER} \
+            --initial-cluster-state ${CLUSTER_STATE} \
+            --initial-cluster-token ${TOKEN}
+
+          Restart=always
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+        mode: '0644'
+
+    - name: Reload systemd configuration
+      systemd:
+        daemon_reload: yes
+
+    - name: Enable ETCD service
+      systemd:
+        name: etcd
+        enabled: yes
+
+    - name: Start ETCD service
+      systemd:
+        name: etcd
+        state: started
+
+    # Verification Tasks
+    - name: Delay 30 seconds for ETCD service to start
+      pause:
+        seconds: 30
+
+    - name: Check ETCD service status
+      command: systemctl status etcd
+      register: etcd_status
+      changed_when: false
+      ignore_errors: true
+
+    - name: Display ETCD service status
+      debug:
+        var: etcd_status.stdout_lines
+
+    - name: Verify cluster member list
+      environment:
+        ETCDCTL_API: "3"
+      command: "etcdctl --endpoints={{ etcd_endpoints }} member list"
+      register: member_list
+      changed_when: false
+      run_once: true
+      ignore_errors: true
+
+    - name: Display cluster member list
+      debug:
+        var: member_list.stdout_lines
+      run_once: true
+
+    - name: Check cluster health
+      environment:
+        ETCDCTL_API: "3"
+      command: "etcdctl --endpoints={{ etcd_endpoints }} endpoint health"
+      register: cluster_health
+      changed_when: false
+      run_once: true
+      ignore_errors: true
+
+    - name: Display cluster health
+      debug:
+        var: cluster_health.stdout_lines
+      run_once: true

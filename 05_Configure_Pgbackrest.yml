@@ -1,0 +1,430 @@
+---
+- name: Configure pgBackRest Server
+  hosts: pg_backrest
+  become: true
+  gather_facts: true
+  vars:
+    scope: "kyc"
+    pgversion: "12"
+    repo_path: "/postgres/pgbackup"
+    data_dir: "/postgres/data/{{ pgversion }}/{{ scope }}"
+    ssh_dir: "/var/lib/postgresql/.ssh"
+
+  tasks:
+    - name: Gather facts for all pg_nodes
+      setup:
+      delegate_to: "{{ item }}"
+      delegate_facts: true
+      loop: "{{ groups['pg_nodes'] }}"
+
+    - name: Initialize pg_nodes
+      set_fact:
+        pg_nodes: []
+
+    - name: Get PostgreSQL node hostnames
+      set_fact:
+        pg_nodes: "{{ pg_nodes + [{'fqdn': hostvars[item]['ansible_fqdn'] | default(item, true), 'ip': hostvars[item]['ansible_default_ipv4']['address'] | default('unknown', true)}] }}"
+      loop: "{{ groups['pg_nodes'] }}"
+
+    - name: Set the cluster name, server name, and stanza name
+      set_fact:
+        cluster_name: "{{ scope }}"
+        srv_name: "{{ inventory_hostname }}"
+        stanza_name: "{{ scope }}"
+
+    # Update hosts file with all node entries
+    - name: Update hosts file with pgBackRest server
+      lineinfile:
+        path: /etc/hosts
+        regexp: "^\\s*{{ hostvars[srv_name]['ansible_default_ipv4']['address'] }}\\s+{{ srv_name }}(\\s.*)?$"
+        line: "{{ hostvars[srv_name]['ansible_default_ipv4']['address'] }} {{ srv_name }}"
+        state: present
+
+    - name: Remove PostgreSQL nodes from hosts file
+      lineinfile:
+        path: /etc/hosts
+        regexp: "^\\s*{{ item.ip }}\\s+{{ item.fqdn }}(\\s.*)?$"
+        state: absent
+      loop: "{{ pg_nodes }}"
+
+    - name: Add PostgreSQL nodes to hosts file
+      lineinfile:
+        path: /etc/hosts
+        regexp: "^\\s*{{ item.ip }}\\s+{{ item.fqdn }}(\\s.*)?$"
+        line: "{{ item.ip }} {{ item.fqdn }}"
+        state: present
+      loop: "{{ pg_nodes }}"
+
+    # Purge existing pgBackRest installation
+    - name: Purge existing pgBackRest installation
+      package:
+        name: percona-pgbackrest
+        state: absent
+
+    - name: Remove existing pgBackRest related dirs and files
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/pgbackrest.conf
+        - /etc/systemd/system/pgbackrest.service
+        - /postgres/pgbackup
+
+    # Install pgBackRest
+    - name: Install pgBackRest
+      package:
+        name: percona-pgbackrest
+        state: present
+
+    # Create repository directory
+    - name: Create pgBackRest repository directory
+      file:
+        path: "{{ repo_path }}"
+        state: directory
+        mode: '0750'
+        owner: postgres
+        group: postgres
+
+    # Set up SSH key-based authentication
+    - name: Create SSH directory for postgres user
+      file:
+        path: "{{ ssh_dir }}"
+        state: directory
+        mode: '0700'
+        owner: postgres
+        group: postgres
+
+    # Fixed SSH key generation approach
+    - name: Generate SSH key pair for pgBackRest server
+      shell: |
+        sudo -u postgres ssh-keygen -t rsa -b 4096 -f {{ ssh_dir }}/id_rsa -N ""
+      args:
+        creates: "{{ ssh_dir }}/id_rsa"
+
+    - name: Fix SSH key permissions
+      file:
+        path: "{{ ssh_dir }}/{{ item }}"
+        owner: postgres
+        group: postgres
+        mode: '0600'  # Private key permission
+      loop:
+        - id_rsa
+        - id_rsa.pub
+      become: true
+
+
+    - name: Get pgBackRest server public key
+      command: cat {{ ssh_dir }}/id_rsa.pub
+      register: pgbackrest_pubkey
+      changed_when: false
+
+    # Create pgBackRest configuration file
+    - name: Create pgBackRest configuration file
+      copy:
+        dest: /etc/pgbackrest.conf
+        content: |
+          [global]
+          
+          # Repository configuration
+          repo1-path={{ repo_path }}
+          repo1-retention-archive-type=full
+          repo1-retention-full=1
+          
+          # Server options
+          process-max=12
+          log-level-console=info
+          log-level-file=info
+          start-fast=y
+          delta=y
+          backup-standby=y
+          
+          [{{ stanza_name }}]
+          {% for node in pg_nodes %}
+          pg{{ loop.index }}-host={{ node.fqdn }}
+          pg{{ loop.index }}-host-user=postgres
+          pg{{ loop.index }}-port=5432
+          pg{{ loop.index }}-path={{ data_dir }}
+          pg{{ loop.index }}-socket-path=/var/run/postgresql
+          {% endfor %}
+        owner: postgres
+        group: postgres
+        mode: '0640'
+
+    # Create systemd service for pgBackRest
+    - name: Create pgBackRest systemd service file
+      copy:
+        dest: /etc/systemd/system/pgbackrest.service
+        content: |
+          [Unit]
+          Description=pgBackRest Server
+          After=network.target
+          
+          [Service]
+          Type=simple
+          User=postgres
+          Restart=always
+          RestartSec=1
+          ExecStart=/usr/bin/pgbackrest server
+          ExecReload=/bin/kill -HUP $MAINPID
+          
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Reload systemd daemon
+      command: systemctl daemon-reload
+
+    - name: Start and enable pgBackRest service
+      systemd:
+        name: pgbackrest
+        state: restarted
+        enabled: true
+
+- name: Configure PostgreSQL nodes for pgBackRest
+  hosts: pg_nodes
+  become: true
+  vars:
+    scope: "kyc"
+    pgversion: "12"
+    data_dir: "/postgres/data/{{ pgversion }}/{{ scope }}"
+    ssh_dir: "/var/lib/postgresql/.ssh"
+
+  tasks:
+    - name: Get pgBackRest node IP and hostname
+      set_fact:
+        backrest_node: "{{ groups['pg_backrest'][0] }}"
+        backrest_ip: "{{ hostvars[groups['pg_backrest'][0]]['ansible_default_ipv4']['address'] }}"
+
+    # Update hosts file entries
+    - name: Remove existing pgBackRest entries
+      lineinfile:
+        path: /etc/hosts
+        regexp: "^\\s*.*\\s+{{ backrest_node }}(\\s.*)?$"
+        state: absent
+
+    - name: Add pgBackRest node to hosts file
+      lineinfile:
+        path: /etc/hosts
+        regexp: "^\\s*{{ backrest_ip }}\\s+{{ backrest_node }}(\\s.*)?$"
+        line: "{{ backrest_ip }} {{ backrest_node }}"
+        state: present
+
+    - name: Remove existing PostgreSQL node entries
+      lineinfile:
+        path: /etc/hosts
+        regexp: "^\\s*{{ hostvars[item]['ansible_default_ipv4']['address'] }}\\s+{{ hostvars[item]['ansible_fqdn'] }}(\\s.*)?$"
+        state: absent
+      loop: "{{ groups['pg_nodes'] }}"
+
+    - name: Add all PostgreSQL nodes to hosts file
+      lineinfile:
+        path: /etc/hosts
+        regexp: "^\\s*{{ hostvars[item]['ansible_default_ipv4']['address'] }}\\s+{{ hostvars[item]['ansible_fqdn'] }}(\\s.*)?$"
+        line: "{{ hostvars[item]['ansible_default_ipv4']['address'] }} {{ hostvars[item]['ansible_fqdn'] }}"
+        state: present
+      loop: "{{ groups['pg_nodes'] }}"
+
+    # Purge existing pgBackRest installation
+    - name: Purge existing pgBackRest installation
+      package:
+        name: percona-pgbackrest
+        state: absent
+
+    - name: Remove existing pgBackRest related dirs and files
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/pgbackrest.conf
+        - /etc/systemd/system/pgbackrest.service
+        - /postgres/pgbackup
+
+    # Install pgBackRest
+
+    - name: Install pgBackRest
+      package:
+        name: percona-pgbackrest
+        state: present
+
+    # Set up SSH directory and authorized_keys for postgres user
+    - name: Create SSH directory for postgres user
+      file:
+        path: "{{ ssh_dir }}"
+        state: directory
+        mode: '0700'
+        owner: postgres
+        group: postgres
+
+    - name: Create authorized_keys file
+      file:
+        path: "{{ ssh_dir }}/authorized_keys"
+        state: touch
+        mode: '0600'
+        owner: postgres
+        group: postgres
+
+    - name: Get pgBackRest server public key
+      command: cat {{ ssh_dir }}/id_rsa.pub
+      register: pgbackrest_pubkey
+      delegate_to: "{{ groups['pg_backrest'][0] }}"
+      changed_when: false
+
+    - name: Add pgBackRest server public key to authorized_keys
+      lineinfile:
+        path: "{{ ssh_dir }}/authorized_keys"
+        line: "{{ pgbackrest_pubkey.stdout }}"
+        state: present
+
+    # Create pgBackRest configuration
+    - name: Create pgBackRest configuration file
+      copy:
+        dest: /etc/pgbackrest.conf
+        content: |
+          [global]
+          repo1-host={{ groups['pg_backrest'][0] }}
+          repo1-host-user=postgres
+          
+          # General options
+          process-max=16
+          log-level-console=info
+          log-level-file=debug
+          
+          [{{ scope }}]
+          pg1-path={{ data_dir }}
+        owner: postgres
+        group: postgres
+        mode: '0640'
+
+    # Create systemd service for pgBackRest
+    - name: Create pgBackRest systemd service file
+      copy:
+        dest: /etc/systemd/system/pgbackrest.service
+        content: |
+          [Unit]
+          Description=pgBackRest Server
+          After=network.target
+          
+          [Service]
+          Type=simple
+          User=postgres
+          Restart=always
+          RestartSec=1
+          ExecStart=/usr/bin/pgbackrest server
+          ExecReload=/bin/kill -HUP $MAINPID
+          
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Reload systemd daemon
+      command: systemctl daemon-reload
+
+    - name: Start and enable pgBackRest service
+      systemd:
+        name: pgbackrest
+        state: restarted
+        enabled: true
+
+    # Set up SSH known_hosts to prevent interactive prompts
+    - name: Add pgBackRest host to known_hosts
+      shell: |
+        sudo -u postgres ssh-keyscan -t rsa {{ groups['pg_backrest'][0] }} >> {{ ssh_dir }}/known_hosts
+      args:
+        creates: "{{ ssh_dir }}/known_hosts"
+
+    - name: Ensure known_hosts has proper permissions
+      file:
+        path: "{{ ssh_dir }}/known_hosts"
+        owner: postgres
+        group: postgres
+        mode: '0600'
+
+- name: Update Patroni Configuration for pgBackRest
+  hosts: pg_nodes[0]
+  become: true
+  vars:
+    scope: "kyc"
+    pgversion: "12"
+    patroni_config_file: /etc/patroni/patroni.yml
+    data_dir: "/postgres/data/{{ pgversion }}/{{ scope }}"
+    
+  tasks:
+    - name: Update Patroni configuration for pgBackRest archiving
+      command: >
+        patronictl -c {{ patroni_config_file }} edit-config 
+        -s postgresql.parameters.archive_mode=on
+        -s postgresql.parameters.archive_command="pgbackrest --stanza={{ scope }} archive-push {{ data_dir }}/pg_wal/%f"
+        -s postgresql.recovery_conf.restore_command="pgbackrest --config=/etc/pgbackrest.conf --stanza={{ scope }} archive-get %f %p"
+        --force
+      ignore_errors: yes
+
+    - name: Reload Patroni config
+      command: patronictl -c {{ patroni_config_file }} reload {{ scope }} --force
+      ignore_errors: yes
+
+- name: Set up SSH Authentication Between PostgreSQL Nodes and pgBackRest Server
+  hosts: pg_nodes
+  become: true
+  vars:
+    ssh_dir: "/var/lib/postgresql/.ssh"
+  tasks:
+    # Fixed SSH key generation approach for PostgreSQL nodes
+    - name: Generate SSH key pair for PostgreSQL nodes
+      shell: |
+        if [ ! -f {{ ssh_dir }}/id_rsa ]; then
+          sudo -u postgres ssh-keygen -t rsa -b 4096 -f {{ ssh_dir }}/id_rsa -N ""
+        fi
+      args:
+        creates: "{{ ssh_dir }}/id_rsa"
+
+    - name: Fix SSH key permissions
+      file:
+        path: "{{ ssh_dir }}/{{ item }}"
+        owner: postgres
+        group: postgres
+        mode: '0600'
+      loop:
+        - id_rsa
+        - id_rsa.pub
+
+    - name: Get PostgreSQL node public key
+      command: cat {{ ssh_dir }}/id_rsa.pub
+      register: pg_node_pubkey
+      changed_when: false
+
+    - name: Add PostgreSQL node public key to pgBackRest server authorized_keys
+      authorized_key:
+        user: postgres
+        key: "{{ pg_node_pubkey.stdout }}"
+        state: present
+      delegate_to: "{{ groups['pg_backrest'][0] }}"
+
+    # Set up SSH known_hosts to prevent interactive prompts for each pg_node to backrest server
+    - name: Add pgBackRest host to known_hosts
+      shell: |
+        sudo -u postgres ssh-keyscan -t rsa {{ groups['pg_backrest'][0] }} >> {{ ssh_dir }}/known_hosts
+      args:
+        creates: "{{ ssh_dir }}/known_hosts"
+
+    - name: Ensure known_hosts has proper permissions
+      file:
+        path: "{{ ssh_dir }}/known_hosts"
+        owner: postgres
+        group: postgres
+        mode: '0600'
+
+- name: Now start stanza creation
+  hosts: pg_backrest
+  become: true
+  vars:
+    scope: "kyc"
+  tasks:
+    - name: Print message for stanza creation
+      debug:
+        msg: "You need to create the pgBackRest stanza manually by running: sudo -iu postgres pgbackrest --stanza={{ scope }} stanza-create"
+
+    - name: Print message for full backup creation
+      debug:
+        msg: "After stanza creation, create a full backup manually by running: sudo -iu postgres pgbackrest --stanza={{ scope }} --type=full backup"
+
+    - name: Print message for backup info
+      debug:
+        msg: "After the backup is complete, check the backup status manually by running: sudo -iu postgres pgbackrest --stanza={{ scope }} info"

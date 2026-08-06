@@ -1,0 +1,243 @@
+---
+- name: Install PMM Server and Client on pgBackRest Server
+  hosts: pg_backrest
+  become: true
+  gather_facts: true
+  vars:
+    pg_pmm_user_password: "StrongPassword123"  # Change this to a secure password
+    pmm_admin_password: "NewAdminPassword123"  # Change this to a secure password for PMM admin
+    pmm_server_port: 443
+    scope: "kyc"
+    pgversion: "12"
+
+  tasks:
+    - name: Install Docker prerequisites
+      package:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - software-properties-common
+          - gnupg
+        state: present
+
+    - name: Add Docker GPG key (Debian)
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+      
+
+    - name: Add Docker repository (Debian)
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/{{ ansible_distribution | lower }} {{ ansible_distribution_release }} stable"
+        state: present
+      
+
+    - name: Install Docker
+      package:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+        state: present
+
+    - name: Start Docker service
+      systemd:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Install PMM Server using Easy-install script
+      shell: |
+        curl -fsSL https://raw.githubusercontent.com/percona/pmm/refs/heads/v3/get-pmm.sh | /bin/bash
+      args:
+        creates: /usr/local/bin/pmm-admin  # Use a different indicator since this is server
+
+    - name: Wait for PMM Server to become available
+      uri:
+        url: "https://localhost:{{ pmm_server_port }}"
+        validate_certs: no
+        status_code: 200
+      register: result
+      until: result.status == 200
+      retries: 30
+      delay: 10
+      ignore_errors: yes
+
+    - name: Change default admin password
+      command: |
+        docker exec -t pmm-server change-admin-password {{ pmm_admin_password }}
+
+
+    - name: Get PMM server IP
+      set_fact:
+        pmm_server_ip: "{{ ansible_default_ipv4.address }}"
+
+    - name: Display PMM Server access information
+      debug:
+        msg: 
+          - "PMM Server is installed and running"
+          - "Access PMM Web Interface at: https://{{ pmm_server_ip }}:{{ pmm_server_port }}"
+          - "Username: admin"
+          - "Password: {{ pmm_admin_password }}"
+
+- name: Find primary PostgreSQL node
+  hosts: pg_nodes
+  become: true
+  gather_facts: true
+  vars:
+    scope: "kyc"
+  tasks:
+    - name: Get Patroni cluster status
+      shell: |
+        patronictl -c /etc/patroni/patroni.yml list -f json
+      register: patroni_status
+      changed_when: false
+      
+    - name: Set facts about primary node
+      set_fact:
+        is_primary: "{{ (patroni_status.stdout | from_json) | selectattr('Role', 'eq', 'Leader') | map(attribute='Member') | list | first == inventory_hostname }}"
+      
+    - name: Add primary node to group
+      add_host:
+        name: "{{ inventory_hostname }}"
+        groups: pg_primary
+      when: is_primary | bool
+      
+- name: Install pg_stat_monitor package on all nodes
+  hosts: pg_nodes
+  become: true
+  gather_facts: true
+  vars:
+    pgversion: "12"
+  tasks:
+    - name: Install percona-pg-stat-monitor12 package
+      package:
+        name: percona-pg-stat-monitor12
+        state: present
+      
+    - name: Install PMM Client repository
+      shell: |
+        wget -O - https://repo.percona.com/apt/percona-release_latest.generic_all.deb > /tmp/percona-release.deb
+        dpkg -i /tmp/percona-release.deb
+        rm -f /tmp/percona-release.deb
+      args:
+        creates: /usr/bin/percona-release
+        
+    - name: Enable PMM client repository
+      command: percona-release enable pmm3-client release
+      args:
+        creates: /etc/apt/sources.list.d/percona-pmm3-client-release.list
+        
+    - name: Install PMM Client
+      apt:
+        name: pmm-client
+        state: present
+        update_cache: yes
+      
+
+- name: Install PMM Client on PostgreSQL Nodes
+  hosts: pg_nodes
+  become: true
+  vars:
+    pg_pmm_user_password: "StrongPassword123"  # Should match the password used above
+    pmm_server_host: "{{ hostvars[groups['pg_backrest'][0]]['ansible_default_ipv4']['address'] }}"
+    pmm_admin_password: "NewAdminPassword123"  # Should match the password used above
+    pmm_server_port: 443
+    scope: "kyc"
+    pgversion: "12"
+    pg_data_dir: "/postgres/data/{{ pgversion }}/{{ scope }}"
+
+  tasks:
+    - name: Enable PMM client repository
+      command: percona-release enable pmm3-client release
+
+
+    - name: Install PMM Client (Debian)
+      apt:
+        name: pmm-client
+        state: present
+        update_cache: yes
+      
+
+    - name: Create PostgreSQL monitoring user using shell
+      shell: |
+        su - postgres -c "psql -c \"CREATE USER pmm WITH SUPERUSER PASSWORD '{{ pg_pmm_user_password }}';\" || psql -c \"ALTER USER pmm WITH SUPERUSER PASSWORD '{{ pg_pmm_user_password }}';\""
+      register: create_user_result
+      changed_when: create_user_result.rc == 0
+      failed_when: false
+      
+    - name: Update pg_hba.conf to allow PMM user local access
+      lineinfile:
+        path: "{{ pg_data_dir }}/pg_hba.conf"
+        line: "local   all             pmm                                     md5"
+        insertafter: "^# TYPE\\s+DATABASE\\s+USER\\s+ADDRESS\\s+METHOD"
+        state: present
+      register: pg_hba_updated
+
+    - name: Ensure pg_stat_monitor is in shared_preload_libraries
+      lineinfile:
+        path: "{{ pg_data_dir }}/postgresql.conf"
+        regexp: "^#?shared_preload_libraries\\s*="
+        line: "shared_preload_libraries = 'pg_stat_monitor'"
+        state: present
+      register: shared_libs_updated
+
+    - name: Set pg_stat_monitor configuration
+      lineinfile:
+        path: "{{ pg_data_dir }}/postgresql.conf"
+        line: "pg_stat_monitor.pgsm_query_max_len = 2048"
+        state: present
+      register: pg_stat_monitor_updated
+
+    # Replace the PostgreSQL restart task with a shell command
+    - name: Restart PostgreSQL if configuration was updated
+      shell: |
+        su - postgres -c "patronictl -c /etc/patroni/patroni.yml restart {{ scope }}"
+      when: pg_hba_updated.changed or shared_libs_updated.changed or pg_stat_monitor_updated.changed
+      register: restart_result
+      changed_when: restart_result.rc == 0
+      failed_when: false
+
+    # Replace the extension creation task with a shell command
+    - name: Create pg_stat_monitor extension
+      shell: |
+        su - postgres -c "psql -d postgres -c 'CREATE EXTENSION IF NOT EXISTS pg_stat_monitor;'"
+      register: create_ext_result
+      changed_when: create_ext_result.rc == 0
+      failed_when: false
+
+- name: Configure PMM Client on all PostgreSQL nodes
+  hosts: pg_nodes
+  become: true
+  vars:
+    pg_pmm_user_password: "StrongPassword123"
+    pmm_server_host: "{{ hostvars[groups['pg_backrest'][0]]['ansible_default_ipv4']['address'] }}"
+    pmm_admin_password: "NewAdminPassword123"
+    pmm_server_port: 443
+
+  tasks:
+    - name: Configure PMM Client
+      shell: |
+        pmm-admin config --server-insecure-tls --server-url=https://admin:{{ pmm_admin_password }}@{{ pmm_server_host }}:{{ pmm_server_port }} --force
+      register: pmm_config
+      changed_when: "'OK' in pmm_config.stdout"
+      failed_when: "pmm_config.rc != 0 and 'already configured' not in pmm_config.stderr"
+
+    - name: Add PostgreSQL monitoring
+      shell: |
+        pmm-admin remove postgresql || true
+        pmm-admin add postgresql --username=pmm --password={{ pg_pmm_user_password }} --skip-connection-check
+      register: pmm_add
+      changed_when: "'OK' in pmm_add.stdout"
+      failed_when: "pmm_add.rc != 0 and 'already exists' not in pmm_add.stderr and 'not found' not in pmm_add.stderr"
+
+    - name: Display PMM Client status
+      command: pmm-admin status
+      register: pmm_status
+      changed_when: false
+
+    - name: Show PMM Client status
+      debug:
+        msg: "{{ pmm_status.stdout_lines }}"
+

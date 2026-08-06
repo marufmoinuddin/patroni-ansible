@@ -1,0 +1,303 @@
+---
+  - name: Configure PostgreSQL and Patroni HA Cluster
+    hosts: pg_nodes
+    become: true
+    gather_facts: true
+    vars:
+      etcd_token: 'PostgreSQL_HA_Cluster_1'
+      etcd_data_dir: '/var/lib/etcd'
+      etcd_nodes: "{{ groups['pg_nodes'] | map('extract', hostvars) | map(attribute='ansible_hostname') | list }}"
+      etcd_ips: "{{ groups['pg_nodes'] | map('extract', hostvars) | map(attribute='ansible_default_ipv4.address') | list }}"
+      etcd_endpoints: "{% for ip in etcd_ips %}http://{{ ip }}:2379{% if not loop.last %},{% endif %}{% endfor %}"
+  
+    tasks:
+      - name: Set node facts
+        set_fact:
+          node_name: "{{ ansible_hostname }}"
+          node_ip: "{{ ansible_default_ipv4.address }}"
+          base_data_dir: "/postgres/data/12"
+          data_dir: "/postgres/data/12/kyc"
+          pg_bin_dir: "/usr/lib/postgresql/12/bin"
+          namespace: "percona_lab"
+          scope: "kyc"
+          is_primary: "{{ inventory_hostname == groups['pg_nodes'][0] }}"
+      
+      # Enhanced Cleanup Section
+      - name: Stop all related services
+        service:
+          name: "{{ item }}"
+          state: stopped
+          enabled: no
+        with_items:
+          - patroni
+          - postgresql
+        ignore_errors: yes
+
+      # PostgreSQL Cluster Removal  
+      - name: Remove the PostgreSQL cluster
+        shell: |
+          sudo pg_dropcluster 12 "{{ scope }}"
+        ignore_errors: yes
+
+      # PostgreSQL Initialization - ONLY ON PRIMARY
+      - name: Create PostgreSQL cluster using pg_createcluster on primary node only
+        command: sudo pg_createcluster 12 {{ scope }} -d {{ data_dir }}
+
+      # Stop the PostgreSQL cluster 
+      - name: Stop the PostgreSQL cluster
+        shell: |
+          sudo /usr/bin/pg_ctlcluster "12-{{ scope }}" stop
+        ignore_errors: yes
+
+      - name: Remove all configuration and data files
+        file:
+          path: "{{ item }}"
+          state: absent
+          force: yes
+        with_items:
+          - /etc/patroni/patroni.yml
+          - /etc/patroni/patroni.yaml
+          - /etc/systemd/system/patroni.service  # Added line
+          - "{{ data_dir }}"
+          - "{{ base_data_dir }}"
+          - /postgres/pgbackup/*
+          - /var/lib/postgresql/12/*
+          - /var/run/postgresql/*
+        ignore_errors: yes
+  
+      - name: Ensure data directory is empty
+        stat:
+          path: "{{ data_dir }}"
+        register: data_dir_stat
+      
+      - name: Remove data directory if it exists
+        command: rm -rf {{ data_dir }}
+        when: data_dir_stat.stat.exists
+  
+      # Enhanced ETCD Cleanup
+      - name: Perform complete ETCD cleanup
+        shell: |
+          for key in \
+            "/{{ namespace }}/{{ scope }}" \
+            "/{{ namespace }}/{{ scope }}/leader" \
+            "/{{ namespace }}/{{ scope }}/system_id" \
+            "/{{ namespace }}/{{ scope }}/initialize" \
+            "/{{ namespace }}/{{ scope }}/members" \
+            "/{{ namespace }}/{{ scope }}/config"
+          do
+            /usr/bin/etcdctl --endpoints="{{ etcd_endpoints }}" del "$key" --prefix
+          done
+        ignore_errors: yes
+  
+      # Verification of Cleanup
+      - name: Verify cleanup
+        block:
+          - name: Check data directory is empty
+            stat:
+              path: "{{ data_dir }}"
+            register: data_dir_stat
+  
+          - name: Check ETCD keys
+            shell: "etcdctl --endpoints='{{ etcd_endpoints }}' get '/{{ namespace }}/{{ scope }}' --prefix | wc -l"
+            register: etcd_keys
+            ignore_errors: yes
+  
+          - name: Display cleanup status
+            debug:
+              msg: 
+                - "Data directory exists: {{ data_dir_stat.stat.exists }}"
+                - "ETCD keys found: {{ etcd_keys.stdout|int }}"
+  
+      - name: Wait for cleanup to settle
+        pause:
+          seconds: 10
+  
+      # Directory Setup
+      - name: Create required directories
+        file:
+          path: "{{ item.path }}"
+          state: directory
+          owner: postgres
+          group: postgres
+          mode: "{{ item.mode }}"
+        with_items:
+          - { path: "{{ base_data_dir }}", mode: '0755' }
+          - { path: "{{ data_dir }}", mode: '0700' }
+          - { path: "/postgres/pgbackup/kyc/archive", mode: '0700' }
+          - { path: "/etc/patroni", mode: '0755' }
+  
+          
+      - name: Create Patroni configuration file
+        blockinfile:
+          path: "/etc/patroni/patroni.yml"
+          create: yes
+          mode: '0644'
+          owner: postgres
+          group: postgres
+          block: |
+            namespace: {{ namespace }}
+            scope: {{ scope }}
+            name: {{ node_name }}
+
+            restapi:
+                listen: 0.0.0.0:8008
+                connect_address: {{ node_ip }}:8008
+
+            etcd3:
+                host: {{ node_ip }}:2379
+
+            bootstrap:
+              dcs:
+                  ttl: 30
+                  loop_wait: 10
+                  retry_timeout: 10
+                  maximum_lag_on_failover: 1048576
+
+                  postgresql:
+                      use_pg_rewind: true
+                      use_slots: true
+                      parameters:
+                          wal_level: replica
+                          hot_standby: "on"
+                          wal_keep_segments: 10
+                          max_wal_senders: 5
+                          max_replication_slots: 10
+                          wal_log_hints: "on"
+                          logging_collector: 'on'
+                          max_wal_size: '10GB'
+                          archive_mode: "on"
+                          archive_timeout: 600s
+                          archive_command: "cp -f %p /home/postgres/archived/%f"
+
+              initdb:
+                  - encoding: UTF8
+                  - data-checksums
+
+              pg_hba:
+                  - host replication replicator 127.0.0.1/32 trust
+                  - host replication replicator 0.0.0.0/0 md5
+                  - host all all 0.0.0.0/0 md5
+                  - host all all ::0/0 md5
+
+              users:
+                  admin:
+                      password: qaz123
+                      options:
+                          - createrole
+                          - createdb
+                  percona:
+                      password: qaz123
+                      options:
+                          - createrole
+                          - createdb 
+
+            postgresql:
+                cluster_name: cluster_1
+                listen: 0.0.0.0:5432
+                connect_address: {{ node_ip }}:5432
+                data_dir: {{ data_dir }}
+                bin_dir: {{ pg_bin_dir }}
+                pgpass: /tmp/pgpass0
+                authentication:
+                    replication:
+                        username: replicator
+                        password: replPasswd
+                    superuser:
+                        username: postgres
+                        password: qaz123
+                parameters:
+                    unix_socket_directories: "/var/run/postgresql/"
+                create_replica_methods:
+                    - basebackup
+                basebackup:
+                    checkpoint: 'fast'
+
+            tags:
+                nofailover: false
+                noloadbalance: false
+                clonefrom: false
+                nosync: false
+
+      - name: Pause for Patroni to settle
+        pause:
+          seconds: 10 
+  
+      - name: Validate Patroni configuration
+        command: patroni --validate-config /etc/patroni/patroni.yml
+  
+      # Systemd Setup
+      # Update the 'Create Patroni systemd service' task with correct ownership
+      - name: Create Patroni systemd service
+        blockinfile:
+          path: "/etc/systemd/system/patroni.service"
+          create: yes
+          mode: '0644'
+          owner: root  # Corrected owner
+          group: root  # Corrected group
+          block: |
+            [Unit]
+            Description=Runners to orchestrate a high-availability PostgreSQL
+            After=syslog.target network.target etcd.service
+            
+            [Service]
+            Type=simple
+            User=postgres
+            Group=postgres
+            ExecStart=/bin/patroni /etc/patroni/patroni.yml
+            ExecReload=/bin/kill -s HUP $MAINPID
+            KillMode=process
+            TimeoutSec=30
+            Restart=always
+            RestartSec=10s
+            
+            [Install]
+            WantedBy=multi-user.target
+          
+  
+      # Service Management - Starting in the right order
+      - name: Reload systemd daemon
+        systemd:
+          daemon_reload: yes
+  
+      # Start primary first
+      - name: Start Patroni on primary node
+        service:
+          name: patroni
+          state: started
+          enabled: yes
+        when: is_primary
+
+      - name: Wait for primary to initialize
+        pause:
+          seconds: 10
+        when: is_primary
+  
+      # Then start secondaries
+      - name: Start Patroni on replica nodes
+        service:
+          name: patroni
+          state: started
+          enabled: yes
+        when: not is_primary
+  
+      - name: Create patronictl alias
+        blockinfile:
+          path: /etc/profile.d/patroni-alias.sh
+          create: yes
+          mode: '0644'
+          block: |
+            alias patronictl='patronictl -c /etc/patroni/patroni.yml'
+  
+      # Final Verification
+      - name: Wait for cluster to stabilize
+        pause:
+          seconds: 15
+  
+      - name: Check cluster status
+        shell: patronictl -c /etc/patroni/patroni.yml list
+        register: cluster_status
+        ignore_errors: yes
+  
+      - name: Display cluster status
+        debug:
+          var: cluster_status.stdout_lines

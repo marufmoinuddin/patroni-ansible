@@ -1,0 +1,214 @@
+---
+- name: Set up locale en_US.UTF-8 and en_IN.UTF-8
+  hosts: pg_nodes
+  become: true
+  tasks:
+    - name: Uncomment en_US.UTF-8 and en_IN.UTF-8 in /etc/locale.gen
+      ansible.builtin.shell:
+        cmd: |
+          sed -i '/^#.*en_US.UTF-8/s/^#//' /etc/locale.gen
+          sed -i '/^#.*en_IN.UTF-8/s/^#//' /etc/locale.gen
+        creates: /etc/locale.gen  # This prevents the task from running if the file already exists
+
+    - name: Regenerate locales
+      ansible.builtin.command:
+        cmd: locale-gen
+
+    - name: Verify if en_US.UTF-8 locale was generated
+      ansible.builtin.command:
+        cmd: locale -a
+      register: locale_list
+      changed_when: false
+
+    - name: Set locales in /etc/default/locale
+      ansible.builtin.lineinfile:
+        path: /etc/default/locale
+        line: "{{ item }}"
+        create: yes
+      loop:
+        - "LANG=en_US.UTF-8"
+        - "LANGUAGE=en_US.UTF-8"
+        - "LC_ALL=en_US.UTF-8"
+
+    - name: Verify locale after update
+      ansible.builtin.command:
+        cmd: locale
+      register: locale_verification
+
+    - name: Show locale verification output
+      ansible.builtin.debug:
+        msg: "{{ locale_verification.stdout }}"
+
+- name: Purge existing Patroni and PostgreSQL installations in all nodes
+  hosts: all
+  become: true
+  tasks:
+    - name: Stop and disable Patroni and PostgreSQL services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: stopped
+        enabled: false
+      loop:
+        - patroni
+        - postgresql
+      ignore_errors: true
+
+    - name: Purge Patroni and PostgreSQL packages
+      ansible.builtin.apt:
+        name: 
+          - percona-patroni
+          - percona-postgresql-12
+          - postgresql-12
+        state: absent
+        purge: yes
+      ignore_errors: true
+
+    - name: Purge Percona HAProxy package if present
+      ansible.builtin.apt:
+        name: percona-haproxy
+        state: absent
+        purge: yes
+      ignore_errors: true 
+
+    - name: Purge pgbackrest package if present
+      ansible.builtin.apt:
+        name: percona-pgbackrest
+        state: absent
+        purge: yes
+      ignore_errors: true
+
+    - name: Remove remaining PostgreSQL directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /var/lib/postgresql
+        - /etc/postgresql
+        - /var/log/postgresql
+      ignore_errors: true
+    
+    - name: Remove pgbackrest directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/pgbackrest.conf
+        - /etc/pgbackrest
+        - /var/log/pgbackrest
+        - /var/lib/pgbackrest
+      ignore_errors: true
+
+    - name: Remove HAProxy directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/haproxy
+        - /var/log/haproxy
+
+- name: Install Percona Distribution and dependencies on all nodes
+  hosts: all
+  become: true
+  tasks:
+    - name: Ensure apt cache is up to date
+      ansible.builtin.apt:
+        update_cache: yes
+
+    - name: Install curl and wget if not present
+      ansible.builtin.apt:
+        name:
+          - curl
+          - wget
+        state: present
+
+    - name: Download the percona-release repository package
+      ansible.builtin.get_url:
+        url: https://repo.percona.com/apt/percona-release_latest.generic_all.deb
+        dest: /tmp/percona-release_latest.generic_all.deb
+
+    - name: Install the percona-release repository package and dependencies
+      ansible.builtin.apt:
+        deb: /tmp/percona-release_latest.generic_all.deb
+
+    - name: Refresh the local apt cache
+      ansible.builtin.apt:
+        update_cache: yes
+
+    - name: Enable the repository for Percona PostgreSQL
+      ansible.builtin.command:
+        cmd: percona-release setup ppg12
+
+- name: Install pgbackrest on PG Backrest Node
+  hosts: pg_backrest
+  become: true
+  tasks:
+    - name: Ensure apt cache is up to date
+      ansible.builtin.apt:
+        update_cache: yes
+
+    - name: Install pgBackRest package
+      ansible.builtin.apt:
+        name: percona-pgbackrest
+        state: present
+
+- name: Install HAProxy on HAProxy Node
+  hosts: ha_proxy
+  become: true
+  tasks:
+    - name: Ensure apt cache is up to date
+      ansible.builtin.apt:
+        update_cache: yes
+
+    - name: Install HAProxy package
+      ansible.builtin.apt:
+        name: haproxy
+        state: present
+
+
+
+- name: Install ETCD and Percona Distribution Install Patroni and PostgreSQL packages on PostgreSQL Nodes
+  hosts: pg_nodes
+  become: true
+  tasks:
+    - name: Ensure apt cache is up to date
+      ansible.builtin.apt:
+        update_cache: yes
+
+    - name: Install Percona Distribution for PostgreSQL packages
+      ansible.builtin.apt:
+        name: percona-postgresql-12
+        state: present
+
+    - name: Install Python and auxiliary packages
+      ansible.builtin.apt:
+        name:
+          - python3-pip
+          - python3-dev
+          - binutils
+        state: present
+
+    - name: Install ETCD, Patroni, and pgBackRest packages
+      ansible.builtin.apt:
+        name:
+          - percona-patroni
+          - etcd
+          - etcd-server
+          - etcd-client
+          - percona-pgbackrest
+        state: present
+
+    - name: Stop and disable all installed services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: stopped
+        enabled: false
+      loop:
+        - etcd
+        - patroni
+        - postgresql
+
+    - name: Remove the existing Postgres data directory
+      ansible.builtin.file:
+        path: /var/lib/postgresql/12/main
+        state: absent
+        force: yes
