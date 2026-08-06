@@ -238,13 +238,7 @@
           # WATCHDOG (High Availability)
           # ----------------------------------------------------------------------
           use_watchdog = on
-          wd_port = {{ wd_port }}
-          wd_authkey = ''  # Set a shared secret for production
-          wd_lifecheck_method = 'heartbeat'
-          wd_interval = 5
-          wd_heartbeat_port = {{ wd_port }}
-          wd_heartbeat_keepalive = 2
-          wd_heartbeat_deadtime = 30
+          # All watchdog params must be indexed in Pgpool 4.5+ (wd_port0, wd_port1, wd_port2)
           {% for node in groups['pg_nodes'] %}
           heartbeat_destination{{ loop.index0 }} = '{{ hostvars[node]['ansible_default_ipv4']['address'] }}'
           heartbeat_destination_port{{ loop.index0 }} = {{ wd_port }}
@@ -390,14 +384,7 @@
           # ============================================================
 
           use_watchdog = on
-          wd_port = {{ wd_port }}
-          wd_authkey = ''
-          wd_lifecheck_method = 'heartbeat'
-          wd_interval = 5
-          wd_heartbeat_port = {{ wd_port }}
-          wd_heartbeat_keepalive = 2
-          wd_heartbeat_deadtime = 30
-
+          # All watchdog params must be indexed in Pgpool 4.5+ (wd_port0, wd_port1, wd_port2)
           # Heartbeat destinations (ALL 3 nodes on every node)
           {% for node in groups['pg_nodes'] %}
           heartbeat_destination{{ loop.index0 }} = '{{ hostvars[node]['ansible_default_ipv4']['address'] }}'
