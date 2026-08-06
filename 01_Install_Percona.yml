@@ -103,10 +103,11 @@
       ignore_errors: true
       when: ansible_os_family == "Debian"
 
-    - name: Install python3-pip on pgBackRest node (for docker module)
+    - name: Install python3-docker on pgBackRest node (for docker module)
       ansible.builtin.dnf:
-        name: python3-pip
+        name: python3-docker
         state: present
+        enablerepo: epel
       when: ansible_os_family == "RedHat"
       delegate_to: "{{ groups['pg_backrest'][0] }}"
       run_once: true

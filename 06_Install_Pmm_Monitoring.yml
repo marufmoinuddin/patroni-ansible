@@ -12,10 +12,11 @@
     pgversion: "16"
 
   tasks:
-    - name: Install Docker Python module
-      pip:
-        name: docker
+    - name: Install Docker Python module (RHEL/CentOS)
+      ansible.builtin.dnf:
+        name: python3-docker
         state: present
+        enablerepo: epel
       when: ansible_os_family == "RedHat"
       tags: docker
     - name: Install Docker prerequisites (Debian/Ubuntu)
