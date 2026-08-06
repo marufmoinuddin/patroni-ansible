@@ -82,19 +82,18 @@
       args:
         creates: /var/lib/docker/images/perconalab/pmm-server:{{ pmm_server_version }}
 
-    - name: Create PMM data volume if missing
+    - name: Remove existing PMM Server container if present
       shell: |
-        docker volume create pmm-data || true
+        docker rm -f pmm-server || true
       changed_when: false
+      ignore_errors: true
 
     - name: Run PMM Server container
       shell: |
         docker run -d --name pmm-server --restart always -p 443:443 -v pmm-data:/srv perconalab/pmm-server:{{ pmm_server_version }}
-      args:
-        creates: /var/lib/docker/containers/$(docker ps -aqf name=pmm-server | head -1)
       register: pmm_run
-      ignore_errors: true
       changed_when: pmm_run.rc == 0
+      ignore_errors: true
 
     - name: Wait for PMM Server to become available
       uri:
