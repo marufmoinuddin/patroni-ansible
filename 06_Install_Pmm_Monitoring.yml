@@ -253,7 +253,7 @@
     # Replace the PostgreSQL restart task with a shell command
     - name: Restart PostgreSQL if configuration was updated
       shell: |
-        su - postgres -c "patronictl -c /etc/patroni/patroni.yml restart {{ scope }}"
+        su - postgres -c "patronictl -c /etc/patroni/patroni.yml restart {{ scope }} --no-wait"
       when: pg_hba_updated.changed or shared_libs_updated.changed or pg_stat_monitor_updated.changed
       register: restart_result
       changed_when: restart_result.rc == 0
