@@ -81,11 +81,6 @@
       ansible.builtin.command: sudo pg_createcluster {{ pg_version }} {{ scope }} -d {{ data_dir }}
       when: ansible_os_family == "Debian" and is_primary
 
-    - name: Initialize PostgreSQL cluster using initdb on primary node only (RHEL/CentOS)
-      ansible.builtin.command: |
-        sudo -u postgres {{ pg_bin_dir }}/initdb -D {{ data_dir }} -E UTF8 --data-checksums
-      when: ansible_os_family == "RedHat" and is_primary
-
     # Stop the PostgreSQL cluster
     - name: Stop the PostgreSQL cluster (Debian/Ubuntu)
       ansible.builtin.shell: |
@@ -218,7 +213,7 @@
                         max_wal_size: '10GB'
                         archive_mode: "on"
                         archive_timeout: 600s
-                        archive_command: "cp -f %p /home/postgres/archived/%f"
+                        archive_command: "cp -f %p /postgres/pgbackup/kyc/archive/%f"
 
             initdb:
                 - encoding: UTF8
@@ -226,9 +221,9 @@
 
             pg_hba:
                 - host replication replicator 127.0.0.1/32 trust
-                - host replication replicator 0.0.0.0/0 md5
-                - host all all 0.0.0.0/0 md5
-                - host all all ::0/0 md5
+                - host replication replicator 0.0.0.0/0 scram-sha-256
+                - host all all 0.0.0.0/0 scram-sha-256
+                - host all all ::0/0 scram-sha-256
 
             users:
                 admin:
@@ -238,6 +233,11 @@
                         - createdb
                 percona:
                     password: qaz123
+                    options:
+                        - createrole
+                        - createdb
+                pgpool:
+                    password: pgpool_pass
                     options:
                         - createrole
                         - createdb
@@ -293,7 +293,7 @@
           Type=simple
           User=postgres
           Group=postgres
-          ExecStart=/bin/patroni /etc/patroni/patroni.yml
+          ExecStart={{ '/usr/bin/patroni' if ansible_os_family == 'RedHat' else '/bin/patroni' }} /etc/patroni/patroni.yml
           ExecReload=/bin/kill -s HUP $MAINPID
           KillMode=process
           TimeoutSec=30

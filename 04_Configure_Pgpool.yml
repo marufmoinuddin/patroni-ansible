@@ -5,30 +5,30 @@
   gather_facts: true
   vars:
     pg_version: "16"
-    pgpool_version: "4.5"  # Pgpool-II version compatible with PG 16
     vip: "192.168.122.200"
-    vip_interface: "eth0"  # Adjust to your network interface (e.g., ens3, eth0, enp1s0)
+    vip_interface: "eth0"  # Confirmed: CentOS Stream VMs use eth0
     vip_cidr: "24"
     pgpool_port: 9999
     pcp_port: 9898
     wd_port: 9000
     wd_priority_base: 1
-    # Patroni/PostgreSQL connection info
     scope: "kyc"
     data_dir: "{{ '/postgres/data/' ~ pg_version ~ '/' ~ scope if ansible_os_family == 'Debian' else '/var/lib/pgsql/' ~ pg_version ~ '/data/' ~ scope }}"
     patroni_config: "/etc/patroni/patroni.yml"
-    # Watchdog settings
-    delegate_ip: "{{ vip }}"
+    # OS-specific paths
+    pgpool_conf_dir: "{{ '/etc/pgpool2' if ansible_os_family == 'Debian' else '/etc/pgpool-II' }}"
+    pgpool_service_name: "{{ 'pgpool2' if ansible_os_family == 'Debian' else 'pgpool' }}"
+    pgpool_log_dir: "{{ '/var/log/pgpool2' if ansible_os_family == 'Debian' else '/var/log/pgpool' }}"
+    pg_md5_bin: "/usr/bin/pg_md5"
     if_cmd_path: "/usr/sbin"
     arping_path: "/usr/sbin"
-    # Pgpool admin users
+    # Pgpool users (must match Patroni bootstrap.users for pgpool)
     pgpool_admin_user: "pgpool_admin"
     pgpool_admin_password: "pgpool_admin_pass"  # Change in production!
     pcp_user: "pgpool_pcp"
     pcp_password: "pcp_pass"  # Change in production!
-    # Health check
-    health_check_user: "pgpool_health"
-    health_check_password: "health_pass"  # Change in production!
+    health_check_user: "pgpool"
+    health_check_password: "pgpool_pass"  # Must match Patroni bootstrap pgpool user
 
   tasks:
     - name: Set node-specific facts
@@ -45,57 +45,43 @@
           - "Index: {{ node_index }}"
           - "Is first: {{ is_first_node }}"
           - "OS: {{ ansible_os_family }}"
+          - "Config dir: {{ pgpool_conf_dir }}"
+          - "Service: {{ pgpool_service_name }}"
           - "Data dir: {{ data_dir }}"
 
     # ============================================================
-    # 1. INSTALL PGROOL-II FROM PERCONA / PGDG REPOS
+    # 1. INSTALL PGROOL-II FROM PERCONA REPOS
     # ============================================================
-    - name: Ensure Percona repository is enabled for PG {{ pg_version }}
-      command: percona-release setup ppg{{ pg_version }}
-      changed_when: false
-
-    - name: Install Pgpool-II and extensions (Debian/Ubuntu)
+    - name: Install Pgpool-II (Debian/Ubuntu)
       apt:
         name:
-          - percona-pgpool{{ pg_version | replace('.', '') }}
-          - postgresql-{{ pg_version }}-pgpool2
+          - percona-pgpool16
+          - postgresql-16-pgpool2
         state: present
         update_cache: yes
       when: ansible_os_family == "Debian"
 
-    - name: Install Pgpool-II and extensions (RHEL/CentOS)
+    - name: Install Pgpool-II (RHEL/CentOS)
       dnf:
         name:
-          - pgpool2_{{ pg_version }}
-          - pgpool2_{{ pg_version }}-extensions
+          - percona-pgpool-II-pg16
+          - percona-pgpool-II-pg16-extensions
         state: present
       when: ansible_os_family == "RedHat"
 
-    - name: Set Pgpool service name (Debian/Ubuntu = pgpool2, RHEL/CentOS = pgpool)
-      set_fact:
-        pgpool_service: "{{ 'pgpool2' if ansible_os_family == 'Debian' else 'pgpool' }}"
+    - name: Ensure Pgpool log directory exists
+      file:
+        path: "{{ pgpool_log_dir }}"
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: '0755'
 
     # ============================================================
-    # 2. CREATE PGROOL ADMIN / HEALTH CHECK USERS IN POSTGRESQL
-    #    (Run once on primary via patronictl)
+    # 2. CREATE PGROOL USERS IN POSTGRESQL (ON PRIMARY)
     # ============================================================
     - name: Create Pgpool users in PostgreSQL (on primary only)
       block:
-        - name: Wait for Patroni to be ready
-          shell: |
-            for i in {1..30}; do
-              if patronictl -c {{ patroni_config }} list | grep -q Leader; then
-                exit 0
-              fi
-              sleep 2
-            done
-            exit 1
-          register: wait_patroni
-          until: wait_patroni.rc == 0
-          retries: 1
-          delegate_to: "{{ groups['pg_nodes'][0] }}"
-          run_once: true
-
         - name: Create pgpool_admin user
           shell: |
             su - postgres -c "psql -c \"CREATE USER {{ pgpool_admin_user }} WITH SUPERUSER PASSWORD '{{ pgpool_admin_password }}';\" || psql -c \"ALTER USER {{ pgpool_admin_user }} WITH SUPERUSER PASSWORD '{{ pgpool_admin_password }}';\""
@@ -110,66 +96,74 @@
           run_once: true
           ignore_errors: true
 
-        - name: Create health check user
+        - name: Create health check user (pgpool)
           shell: |
             su - postgres -c "psql -c \"CREATE USER {{ health_check_user }} WITH PASSWORD '{{ health_check_password }}';\" || psql -c \"ALTER USER {{ health_check_user }} WITH PASSWORD '{{ health_check_password }}';\""
-          delegate_to: "{{ groups['pg_nodes'][0] }}"
-          run_once: true
-          ignore_errors: true
-
-        - name: Grant pg_monitor to health check user (for pg_stat_activity access)
-          shell: |
-            su - postgres -c "psql -c \"GRANT pg_monitor TO {{ health_check_user }};\""
           delegate_to: "{{ groups['pg_nodes'][0] }}"
           run_once: true
           ignore_errors: true
       when: is_first_node
 
     # ============================================================
-    # 3. CREATE POOL_PASSWD FILE FOR PGROOL AUTHENTICATION
+    # 3. AUTH FILES: pool_passwd (PLAINTEXT for SCRAM), pcp.conf
     # ============================================================
-    - name: Generate pool_passwd entries
-      shell: |
-        pg_md5 --md5auth --username={{ pgpool_admin_user }} {{ pgpool_admin_password }}
-      register: pgpool_admin_md5
-      changed_when: false
-      delegate_to: "{{ groups['pg_nodes'][0] }}"
-      run_once: true
-
-    - name: Generate pool_passwd for pcp user
-      shell: |
-        pg_md5 --md5auth --username={{ pcp_user }} {{ pcp_password }}
-      register: pcp_md5
-      changed_when: false
-      delegate_to: "{{ groups['pg_nodes'][0] }}"
-      run_once: true
-
-    - name: Generate pool_passwd for health check user
-      shell: |
-        pg_md5 --md5auth --username={{ health_check_user }} {{ health_check_password }}
-      register: health_md5
-      changed_when: false
-      delegate_to: "{{ groups['pg_nodes'][0] }}"
-      run_once: true
-
-    - name: Create pool_passwd file on all nodes
+    # Pgpool 4.7 + PostgreSQL 16 uses SCRAM-SHA-256:
+    # pool_passwd must contain PLAINTEXT passwords (NOT md5 hashes).
+    - name: Create pool_passwd file (plaintext for SCRAM)
       copy:
-        dest: /etc/pgpool2/pool_passwd
+        dest: "{{ pgpool_conf_dir }}/pool_passwd"
         content: |
-          {{ pgpool_admin_user }}:{{ pgpool_admin_md5.stdout }}
-          {{ pcp_user }}:{{ pcp_md5.stdout }}
-          {{ health_check_user }}:{{ health_md5.stdout }}
+          {{ pgpool_admin_user }}:{{ pgpool_admin_password }}
+          {{ health_check_user }}:{{ health_check_password }}
         owner: postgres
         group: postgres
         mode: '0640'
-      become: true
+      notify: restart pgpool
+
+    # pcp.conf: plaintext passwords are accepted by Pgpool 4.x
+    - name: Create pcp.conf
+      copy:
+        dest: "{{ pgpool_conf_dir }}/pcp.conf"
+        content: |
+          # USERID:PASSWORD
+          {{ pcp_user }}:{{ pcp_password }}
+        owner: postgres
+        group: postgres
+        mode: '0640'
+      notify: restart pgpool
+
+    # pgpool_node_id: REQUIRED by Pgpool 4.7 (0,1,2 per node)
+    - name: Create pgpool_node_id file
+      copy:
+        dest: "{{ pgpool_conf_dir }}/pgpool_node_id"
+        content: "{{ node_index - 1 }}\n"
+        owner: postgres
+        group: postgres
+        mode: '0644'
+      notify: restart pgpool
+
+    # pool_hba.conf: governs client auth through Pgpool (scram, no hostssl)
+    - name: Create pool_hba.conf
+      copy:
+        dest: "{{ pgpool_conf_dir }}/pool_hba.conf"
+        content: |
+          # Pgpool-II Host Based Authentication
+          # TYPE  DATABASE        USER            ADDRESS                 METHOD
+          local   all             all                                     trust
+          host    all             all             127.0.0.1/32            scram-sha-256
+          host    all             all             192.168.122.0/24        scram-sha-256
+          host    all             all             0.0.0.0/0               scram-sha-256
+        owner: postgres
+        group: postgres
+        mode: '0644'
+      notify: restart pgpool
 
     # ============================================================
-    # 4. CONFIGURE PGROOL-II (pgpool.conf) - ALL INLINE, NO TEMPLATES
+    # 4. CONFIGURE PGROOL-II (pgpool.conf) - ALL INLINE
     # ============================================================
     - name: Configure pgpool.conf
       copy:
-        dest: /etc/pgpool2/pgpool.conf
+        dest: "{{ pgpool_conf_dir }}/pgpool.conf"
         owner: postgres
         group: postgres
         mode: '0644'
@@ -236,9 +230,9 @@
           connect_timeout = 10
 
           # Failover / Failback
-          failover_command = '/etc/pgpool2/failover.sh %d %h %p %D %m %H %M %P %r %R'
+          failover_command = '{{ pgpool_conf_dir }}/failover.sh %d %h %p %D %m %H %M %P %r %R'
           failback_command = ''
-          follow_master_command = '/etc/pgpool2/follow_master.sh %d %h %p %D %m %H %M %P %r %R'
+          follow_master_command = '{{ pgpool_conf_dir }}/follow_master.sh %d %h %p %D %m %H %M %P %r %R'
 
           # ----------------------------------------------------------------------
           # WATCHDOG (High Availability)
@@ -251,18 +245,16 @@
           wd_heartbeat_port = {{ wd_port }}
           wd_heartbeat_keepalive = 2
           wd_heartbeat_deadtime = 30
-          heartbeat_destination0 = '{{ hostvars[groups['pg_nodes'][0]]['ansible_default_ipv4']['address'] }}'
-          heartbeat_destination_port0 = {{ wd_port }}
-          heartbeat_destination1 = '{{ hostvars[groups['pg_nodes'][1]]['ansible_default_ipv4']['address'] }}'
-          heartbeat_destination_port1 = {{ wd_port }}
-          heartbeat_destination2 = '{{ hostvars[groups['pg_nodes'][2]]['ansible_default_ipv4']['address'] }}'
-          heartbeat_destination_port2 = {{ wd_port }}
+          {% for node in groups['pg_nodes'] %}
+          heartbeat_destination{{ loop.index0 }} = '{{ hostvars[node]['ansible_default_ipv4']['address'] }}'
+          heartbeat_destination_port{{ loop.index0 }} = {{ wd_port }}
+          {% endfor %}
 
-          # Watchdog nodes
+          # Watchdog nodes - indexed tuples, ALL 3 on EVERY node (Pgpool 4.7 requirement)
           {% for node in groups['pg_nodes'] %}
           wd_hostname{{ loop.index0 }} = '{{ hostvars[node]['ansible_hostname'] }}'
           wd_port{{ loop.index0 }} = {{ wd_port }}
-          wd_priority{{ loop.index0 }} = {{ wd_priority_base + (3 - loop.index0) }}  # First node highest priority
+          wd_priority{{ loop.index0 }} = {{ wd_priority_base + (3 - loop.index0) }}
           wd_authkey{{ loop.index0 }} = ''
           {% endfor %}
 
@@ -298,8 +290,8 @@
           # ----------------------------------------------------------------------
           # FILE LOCATIONS
           # ----------------------------------------------------------------------
-          pid_file_name = '/var/run/pgpool2/pgpool.pid'
-          logdir = '/var/log/pgpool2'
+          pid_file_name = '/var/run/pgpool/{{ pgpool_service_name }}.pid'
+          logdir = '{{ pgpool_log_dir }}'
 
           # ----------------------------------------------------------------------
           # EXTENSIONS
@@ -308,25 +300,11 @@
       notify: restart pgpool
 
     # ============================================================
-    # 5. CONFIGURE PCP (pcp.conf)
-    # ============================================================
-    - name: Configure pcp.conf
-      copy:
-        dest: /etc/pgpool2/pcp.conf
-        content: |
-          # USERID:MD5PASSWD
-          {{ pcp_user }}:{{ pcp_md5.stdout }}
-        owner: postgres
-        group: postgres
-        mode: '0640'
-      notify: restart pgpool
-
-    # ============================================================
-    # 5b. DEPLOY FAILOVER SCRIPTS
+    # 5. DEPLOY FAILOVER SCRIPTS (NO sudo - CS9 has no sudo by default)
     # ============================================================
     - name: Deploy failover script
       copy:
-        dest: /etc/pgpool2/failover.sh
+        dest: "{{ pgpool_conf_dir }}/failover.sh"
         owner: postgres
         group: postgres
         mode: '0755'
@@ -335,18 +313,6 @@
           # Failover script for Pgpool-II with Patroni
           # Called when a backend node fails
 
-          # Arguments from Pgpool-II:
-          # %d = failed node ID
-          # %h = failed node hostname
-          # %p = failed node port
-          # %D = failed node database cluster path
-          # %m = new master node ID
-          # %H = new master node hostname
-          # %M = new master port
-          # %P = old master node ID
-          # %r = new master database cluster path
-          # %R = old master database cluster path
-
           FAILED_NODE_ID=$1
           FAILED_NODE_HOST=$2
           FAILED_NODE_PORT=$3
@@ -358,50 +324,32 @@
           NEW_MASTER_DATA=$9
           OLD_MASTER_DATA=${10}
 
-          LOG_FILE="/var/log/pgpool2/failover.log"
+          LOG_FILE="{{ pgpool_log_dir }}/failover.log"
           PATRONI_CONFIG="/etc/patroni/patroni.yml"
-          SCOPE="{{ scope }}"
 
           exec >> "$LOG_FILE" 2>&1
           echo "$(date): Failover triggered - Failed node: $FAILED_NODE_ID ($FAILED_NODE_HOST), New master: $NEW_MASTER_ID ($NEW_MASTER_HOST)"
 
-          # Use patronictl to trigger failover in Patroni
-          # Patroni manages the actual PostgreSQL failover, we just notify it
           if [ "$FAILED_NODE_ID" = "$OLD_MASTER_ID" ]; then
-              echo "$(date): Primary failed, Patroni will handle leader election via etcd"
-              # Patroni automatically handles this via etcd - no action needed
-              # But we can verify the new leader
+              echo "$(date): Primary failed, Patroni handles leader election via etcd"
               sleep 5
               NEW_LEADER=$(su - postgres -c "patronictl -c $PATRONI_CONFIG list -f json 2>/dev/null | jq -r '.[] | select(.Role==\"Leader\") | .Member'")
               echo "$(date): New Patroni leader: $NEW_LEADER"
           else
-              echo "$(date): Replica failed - no action needed, Patroni will handle replication slot cleanup"
+              echo "$(date): Replica failed - no action needed"
           fi
 
           exit 0
 
     - name: Deploy follow_master script
       copy:
-        dest: /etc/pgpool2/follow_master.sh
+        dest: "{{ pgpool_conf_dir }}/follow_master.sh"
         owner: postgres
         group: postgres
         mode: '0755'
         content: |
           #!/bin/bash
           # Follow master script for Pgpool-II with Patroni
-          # Called when a new master is promoted
-
-          # Arguments:
-          # %d = failed node ID
-          # %h = failed node hostname
-          # %p = failed node port
-          # %D = failed node database cluster path
-          # %m = new master node ID
-          # %H = new master node hostname
-          # %M = new master port
-          # %P = old master node ID
-          # %r = new master database cluster path
-          # %R = old master database cluster path
 
           FAILED_NODE_ID=$1
           FAILED_NODE_HOST=$2
@@ -414,20 +362,15 @@
           NEW_MASTER_DATA=$9
           OLD_MASTER_DATA=${10}
 
-          LOG_FILE="/var/log/pgpool2/failover.log"
+          LOG_FILE="{{ pgpool_log_dir }}/failover.log"
           PATRONI_CONFIG="/etc/patroni/patroni.yml"
-          SCOPE="{{ scope }}"
 
           exec >> "$LOG_FILE" 2>&1
           echo "$(date): Follow master triggered - New master: $NEW_MASTER_ID ($NEW_MASTER_HOST)"
 
-          # Verify Patroni recognizes the new leader
           sleep 3
           NEW_LEADER=$(su - postgres -c "patronictl -c $PATRONI_CONFIG list -f json 2>/dev/null | jq -r '.[] | select(.Role==\"Leader\") | .Member'")
           echo "$(date): Confirmed Patroni leader: $NEW_LEADER"
-
-          # The replica nodes will automatically follow the new leader via Patroni/etcd
-          # No additional action needed
 
           exit 0
 
@@ -436,7 +379,7 @@
     # ============================================================
     - name: Configure pgpool_watchdog.conf
       copy:
-        dest: /etc/pgpool2/pgpool_watchdog.conf
+        dest: "{{ pgpool_conf_dir }}/pgpool_watchdog.conf"
         owner: postgres
         group: postgres
         mode: '0644'
@@ -446,43 +389,22 @@
           # Generated by Ansible - DO NOT EDIT DIRECTLY
           # ============================================================
 
-          # ----------------------------------------------------------------------
-          # WATCHDOG SETTINGS
-          # ----------------------------------------------------------------------
-          # Enable watchdog
           use_watchdog = on
-
-          # Watchdog communication port
           wd_port = {{ wd_port }}
-
-          # Authentication key for watchdog communication (set in production!)
           wd_authkey = ''
-
-          # Lifecheck method: 'heartbeat' (recommended), 'query', 'external'
           wd_lifecheck_method = 'heartbeat'
+          wd_interval = 5
+          wd_heartbeat_port = {{ wd_port }}
+          wd_heartbeat_keepalive = 2
+          wd_heartbeat_deadtime = 30
 
-          # Lifecheck intervals
-          wd_interval = 5                 # Interval between lifechecks (seconds)
-          wd_heartbeat_port = {{ wd_port }}  # Port for heartbeat signal
-          wd_heartbeat_keepalive = 2      # Heartbeat keepalive interval
-          wd_heartbeat_deadtime = 30      # Deadtime for heartbeat
+          # Heartbeat destinations (ALL 3 nodes on every node)
+          {% for node in groups['pg_nodes'] %}
+          heartbeat_destination{{ loop.index0 }} = '{{ hostvars[node]['ansible_default_ipv4']['address'] }}'
+          heartbeat_destination_port{{ loop.index0 }} = {{ wd_port }}
+          {% endfor %}
 
-          # Heartbeat destinations (other pgpool nodes)
-          # Format: heartbeat_destination<N> = 'IP_ADDRESS'
-          heartbeat_destination0 = '{{ hostvars[groups['pg_nodes'][0]]['ansible_default_ipv4']['address'] }}'
-          heartbeat_destination_port0 = {{ wd_port }}
-          heartbeat_destination1 = '{{ hostvars[groups['pg_nodes'][1]]['ansible_default_ipv4']['address'] }}'
-          heartbeat_destination_port1 = {{ wd_port }}
-          heartbeat_destination2 = '{{ hostvars[groups['pg_nodes'][2]]['ansible_default_ipv4']['address'] }}'
-          heartbeat_destination_port2 = {{ wd_port }}
-
-          # ----------------------------------------------------------------------
-          # WATCHDOG NODE DEFINITIONS
-          # ----------------------------------------------------------------------
-          # Each node in the watchdog cluster
-          # Priority determines leader election (higher = more likely to become leader)
-          # First node (index 0) gets highest priority
-
+          # Watchdog node definitions (ALL 3 on every node; local node = pgpool_node_id)
           {% for node in groups['pg_nodes'] %}
           wd_hostname{{ loop.index0 }} = '{{ hostvars[node]['ansible_hostname'] }}'
           wd_port{{ loop.index0 }} = {{ wd_port }}
@@ -491,84 +413,66 @@
           wd_delegate_IP{{ loop.index0 }} = '{{ vip }}'
           {% endfor %}
 
-          # ----------------------------------------------------------------------
-          # VIRTUAL IP (VIP) MANAGEMENT
-          # ----------------------------------------------------------------------
-          # The VIP that the watchdog leader will manage
+          # Virtual IP (VIP) management
           delegate_IP = '{{ vip }}'
-
-          # Commands to bring VIP up/down
           if_cmd_path = '{{ if_cmd_path }}'
           if_up_cmd = '{{ if_cmd_path }}/ip addr add {{ vip }}/{{ vip_cidr }} dev {{ vip_interface }} label {{ vip_interface }}:pgpool'
           if_down_cmd = '{{ if_cmd_path }}/ip addr del {{ vip }}/{{ vip_cidr }} dev {{ vip_interface }}'
-
-          # ARP command to announce VIP takeover
           arping_path = '{{ arping_path }}'
           arping_cmd = '{{ arping_path }}/arping -U {{ vip }} -w 1 -I {{ vip_interface }}'
-
-          # ----------------------------------------------------------------------
-          # ESCALATION SETTINGS
-          # ----------------------------------------------------------------------
-          # Commands to run on state transitions
-          # (Optional - can be used for notifications)
-          # escalation_command = ''
-          # escalation_command_timeout = 60
-
-          # ----------------------------------------------------------------------
-          # VERIFICATION SETTINGS
-          # ----------------------------------------------------------------------
-          # Verify the VIP is actually up on the leader
-          # verify_timeout = 10
       notify: restart pgpool
 
     # ============================================================
-    # 7. CREATE PGROOL SYSTEMd OVERRIDE FOR VIP MANAGEMENT
+    # 7. SYSTEMD OVERRIDES (VIP capabilities + fast stop)
     # ============================================================
     - name: Create systemd directory for pgpool
       file:
-        path: /etc/systemd/system/{{ pgpool_service }}.service.d
+        path: /etc/systemd/system/{{ pgpool_service_name }}.service.d
         state: directory
         mode: '0755'
 
-    - name: Create systemd override for VIP (requires CAP_NET_ADMIN)
+    - name: Create systemd override (VIP capabilities + fast stop)
       copy:
-        dest: /etc/systemd/system/{{ pgpool_service }}.service.d/vip.conf
+        dest: /etc/systemd/system/{{ pgpool_service_name }}.service.d/override.conf
         content: |
           [Service]
-          # Allow pgpool to manage VIP via ifconfig/ip/arping
+          # Allow pgpool to manage VIP via ip/arping
           CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_DAC_OVERRIDE
           AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_DAC_OVERRIDE
-          # Run as root for VIP management (watchdog escalates)
-          # Note: Pgpool drops privileges after VIP setup if configured
+          # Watchdog ignores SIGTERM during shutdown - force fast stop
+          TimeoutStopSec=3
+          SendSIGKILL=yes
         mode: '0644'
+      notify: restart pgpool
 
     - name: Reload systemd
       systemd:
         daemon_reload: yes
 
     # ============================================================
-    # 8. SETUP SUDOERS FOR VIP COMMANDS (ifconfig/ip/arping)
+    # 8. SUDOERS FOR VIP COMMANDS (postgres needs ip/arping)
     # ============================================================
     - name: Configure sudoers for pgpool VIP management
       copy:
         dest: /etc/sudoers.d/pgpool-vip
         content: |
           # Allow postgres user to run VIP management commands without password
-          postgres ALL=(ALL) NOPASSWD: {{ if_cmd_path }}/ifconfig, {{ if_cmd_path }}/ip, {{ arping_path }}/arping
+          postgres ALL=(ALL) NOPASSWD: {{ if_cmd_path }}/ip, {{ arping_path }}/arping
         mode: '0440'
       validate: 'visudo -cf %s'
+      ignore_errors: true
 
     # ============================================================
     # 9. ENABLE AND START PGROOL SERVICE
     # ============================================================
     - name: Enable pgpool service
       systemd:
-        name: "{{ pgpool_service }}"
+        name: "{{ pgpool_service_name }}"
         enabled: yes
 
     - name: Start pgpool service
       systemd:
-        name: "{{ pgpool_service }}"
+        name: "{{ pgpool_service_name }}"
         state: started
 
     # ============================================================
@@ -580,9 +484,7 @@
 
     - name: Check watchdog status via PCP
       shell: |
-        pcp_watchdog_info -h localhost -p {{ pcp_port }} -U {{ pcp_user }} -w
-      environment:
-        PCPPASSFILE: /etc/pgpool2/pcp.conf
+        PCPPASSFILE={{ pgpool_conf_dir }}/.pcppass pcp_watchdog_info -h localhost -p {{ pcp_port }} -U {{ pcp_user }} -w
       register: wd_info
       changed_when: false
       ignore_errors: true
@@ -590,6 +492,7 @@
     - name: Display watchdog status
       debug:
         var: wd_info.stdout_lines
+      when: wd_info.stdout is defined
 
     - name: Verify VIP is assigned to leader
       shell: |
@@ -604,5 +507,5 @@
   handlers:
     - name: restart pgpool
       systemd:
-        name: "{{ pgpool_service }}"
+        name: "{{ pgpool_service_name }}"
         state: restarted

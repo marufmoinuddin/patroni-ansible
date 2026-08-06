@@ -106,8 +106,8 @@
     - name: Remove Pgpool packages (RHEL/CentOS)
       ansible.builtin.dnf:
         name:
-          - pgpool2_16
-          - pgpool2_16-extensions
+          - percona-pgpool-II-pg16
+          - percona-pgpool-II-pg16-extensions
         state: absent
       ignore_errors: true
       when: ansible_os_family == "RedHat"
@@ -191,10 +191,23 @@
 
     - name: Enable the repository for Percona PostgreSQL 16 (Debian)
       ansible.builtin.command:
-        cmd: percona-release setup ppg16
+        cmd: percona-release setup ppg-16
       when: ansible_os_family == "Debian"
 
     # --- RHEL/CentOS repo setup ---
+    - name: Enable EPEL repository (RHEL/CentOS)
+      ansible.builtin.dnf:
+        name: epel-release
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    - name: Enable CRB repository (RHEL/CentOS Stream)
+      ansible.builtin.command:
+        cmd: dnf config-manager --set-enabled crb
+      register: crb_result
+      changed_when: crb_result.rc == 0
+      when: ansible_os_family == "RedHat"
+
     - name: Install percona-release repository (RHEL/CentOS)
       ansible.builtin.dnf:
         name: "{{ percona_repo_rpm_url }}"
@@ -203,7 +216,7 @@
 
     - name: Enable Percona PostgreSQL 16 repository (RHEL/CentOS)
       ansible.builtin.command:
-        cmd: percona-release setup ppg16
+        cmd: percona-release setup ppg-16
       when: ansible_os_family == "RedHat"
 
 - name: Install pgBackRest on PG Backrest Node
@@ -275,8 +288,10 @@
       ansible.builtin.dnf:
         name:
           - percona-patroni
+          - percona-patroni-etcd
           - etcd
           - percona-pgbackrest
+          - jq
         state: present
       when: ansible_os_family == "RedHat"
 
@@ -291,8 +306,8 @@
     - name: Install Pgpool-II (RHEL/CentOS)
       ansible.builtin.dnf:
         name:
-          - pgpool2_16
-          - pgpool2_16-extensions
+          - percona-pgpool-II-pg16
+          - percona-pgpool-II-pg16-extensions
         state: present
       when: ansible_os_family == "RedHat"
 

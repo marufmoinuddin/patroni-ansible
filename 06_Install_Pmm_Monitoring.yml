@@ -138,30 +138,12 @@
   vars:
     pgversion: "16"
   tasks:
-    - name: Install percona-pg-stat-monitor16 package
+    - name: Install percona-pg_stat_monitor16 package
       package:
-        name: percona-pg-stat-monitor16
+        name: percona-pg_stat_monitor16
         state: present
       
-    - name: Install PMM Client repository (Debian/Ubuntu)
-      shell: |
-        wget -O - https://repo.percona.com/apt/percona-release_latest.generic_all.deb > /tmp/percona-release.deb
-        dpkg -i /tmp/percona-release.deb
-        rm -f /tmp/percona-release.deb
-      args:
-        creates: /usr/bin/percona-release
-      when: ansible_os_family == "Debian"
-
-    - name: Install PMM Client repository (RHEL/CentOS)
-      shell: |
-        wget -O - https://repo.percona.com/yum/percona-release-latest.noarch.rpm > /tmp/percona-release.rpm
-        yum -y install /tmp/percona-release.rpm
-        rm -f /tmp/percona-release.rpm
-      args:
-        creates: /usr/bin/percona-release
-      when: ansible_os_family == "RedHat"
-
-    - name: Enable PMM client repository
+    - name: Enable PMM client repository (Debian/Ubuntu)
       command: percona-release enable pmm3-client release
       args:
         creates: /etc/apt/sources.list.d/percona-pmm3-client-release.list
@@ -169,6 +151,8 @@
 
     - name: Enable PMM client repository (RHEL/CentOS)
       command: percona-release enable pmm3-client release
+      args:
+        creates: /etc/yum.repos.d/percona-pmm3-client-release.repo
       when: ansible_os_family == "RedHat"
 
     - name: Install PMM Client (Debian)
@@ -204,6 +188,8 @@
 
     - name: Enable PMM client repository (RHEL/CentOS)
       command: percona-release enable pmm3-client release
+      args:
+        creates: /etc/yum.repos.d/percona-pmm3-client-release.repo
       when: ansible_os_family == "RedHat"
 
     - name: Install PMM Client (Debian)
