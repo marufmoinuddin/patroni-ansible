@@ -32,7 +32,23 @@
         state: present
       when: ansible_os_family == "RedHat"
 
-    - name: Add Docker GPG key (Debian)
+    - name: Open firewall for PMM server port 443 (RHEL/CentOS)
+      ansible.builtin.iptables:
+        chain: INPUT
+        protocol: tcp
+        destination_port: 443
+        jump: ACCEPT
+      when: ansible_os_family == "RedHat"
+      become: true
+
+    - name: Open Docker FORWARD chain for PMM port 443 (RHEL/CentOS)
+      ansible.builtin.iptables:
+        chain: FORWARD
+        protocol: tcp
+        destination_port: 443
+        jump: ACCEPT
+      when: ansible_os_family == "RedHat"
+      become: true
       apt_key:
         url: https://download.docker.com/linux/ubuntu/gpg
         state: present
@@ -90,7 +106,7 @@
 
     - name: Run PMM Server container
       shell: |
-        docker run -d --name pmm-server --restart always -p 443:443 -v pmm-data:/srv perconalab/pmm-server:{{ pmm_server_version }}
+        docker run -d --name pmm-server --restart always -p 443:8443 -v pmm-data:/srv perconalab/pmm-server:{{ pmm_server_version }}
       register: pmm_run
       changed_when: pmm_run.rc == 0
       ignore_errors: true
@@ -285,6 +301,9 @@
       register: pmm_config
       changed_when: "'OK' in pmm_config.stdout"
       failed_when: "pmm_config.rc != 0 and 'already configured' not in pmm_config.stderr"
+      retries: 10
+      delay: 10
+      until: pmm_config.rc == 0 or 'already configured' in pmm_config.stdout
 
     - name: Add PostgreSQL monitoring
       shell: |
