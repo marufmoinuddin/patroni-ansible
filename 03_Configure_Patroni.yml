@@ -14,31 +14,28 @@
     namespace: "percona_lab"
 
   tasks:
-    - name: Set OS-specific facts
+    - name: Set OS-specific paths (Debian/Ubuntu)
       set_fact:
-        # Debian/Ubuntu paths
-        base_data_dir_debian: "/postgres/data/{{ pg_version }}"
-        data_dir_debian: "/postgres/data/{{ pg_version }}/{{ scope }}"
-        pg_bin_dir_debian: "/usr/lib/postgresql/{{ pg_version }}/bin"
-        pg_socket_dir_debian: "/var/run/postgresql"
-        pg_service_debian: "postgresql"
-        pg_ctl_debian: "/usr/bin/pg_ctlcluster"
+        base_data_dir: "/postgres/data/{{ pg_version }}"
+        data_dir: "/postgres/data/{{ pg_version }}/{{ scope }}"
+        pg_bin_dir: "/usr/lib/postgresql/{{ pg_version }}/bin"
+        pg_socket_dir: "/var/run/postgresql"
+        pg_service: "postgresql"
+        pg_ctl: "/usr/bin/pg_ctlcluster"
+      when: ansible_os_family == "Debian"
 
-        # RHEL/CentOS paths
-        base_data_dir_redhat: "/var/lib/pgsql/{{ pg_version }}"
-        data_dir_redhat: "/var/lib/pgsql/{{ pg_version }}/data/{{ scope }}"
-        pg_bin_dir_redhat: "/usr/pgsql-{{ pg_version }}/bin"
-        pg_socket_dir_redhat: "/var/run/postgresql"
-        pg_service_redhat: "postgresql-{{ pg_version }}"
-        pg_ctl_redhat: "/usr/pgsql-{{ pg_version }}/bin/pg_ctl"
+    - name: Set OS-specific paths (RHEL/CentOS)
+      set_fact:
+        base_data_dir: "/var/lib/pgsql/{{ pg_version }}"
+        data_dir: "/var/lib/pgsql/{{ pg_version }}/data/{{ scope }}"
+        pg_bin_dir: "/usr/pgsql-{{ pg_version }}/bin"
+        pg_socket_dir: "/var/run/postgresql"
+        pg_service: "postgresql-{{ pg_version }}"
+        pg_ctl: "/usr/pgsql-{{ pg_version }}/bin/pg_ctl"
+      when: ansible_os_family == "RedHat"
 
-        # Selected based on OS family
-        base_data_dir: "{{ base_data_dir_debian if ansible_os_family == 'Debian' else base_data_dir_redhat }}"
-        data_dir: "{{ data_dir_debian if ansible_os_family == 'Debian' else data_dir_redhat }}"
-        pg_bin_dir: "{{ pg_bin_dir_debian if ansible_os_family == 'Debian' else pg_bin_dir_redhat }}"
-        pg_socket_dir: "{{ pg_socket_dir_debian if ansible_os_family == 'Debian' else pg_socket_dir_redhat }}"
-        pg_service: "{{ pg_service_debian if ansible_os_family == 'Debian' else pg_service_redhat }}"
-        pg_ctl: "{{ pg_ctl_debian if ansible_os_family == 'Debian' else pg_ctl_redhat }}"
+    - name: Set cluster facts
+      set_fact:
         node_name: "{{ ansible_hostname }}"
         node_ip: "{{ ansible_default_ipv4.address }}"
         is_primary: "{{ inventory_hostname == groups['pg_nodes'][0] }}"
