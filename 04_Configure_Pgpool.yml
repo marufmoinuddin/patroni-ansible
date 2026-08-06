@@ -136,7 +136,7 @@
     - name: Create pgpool_node_id file
       copy:
         dest: "{{ pgpool_conf_dir }}/pgpool_node_id"
-        content: "{{ node_index - 1 }}\n"
+        content: "{{ node_index | int - 1 }}\n"
         owner: postgres
         group: postgres
         mode: '0644'
