@@ -459,7 +459,7 @@
           # Allow postgres user to run VIP management commands without password
           postgres ALL=(ALL) NOPASSWD: {{ if_cmd_path }}/ip, {{ arping_path }}/arping
         mode: '0440'
-      validate: 'visudo -cf %s'
+        validate: 'visudo -cf %s'
       ignore_errors: true
 
     # ============================================================
