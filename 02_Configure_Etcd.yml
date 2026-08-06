@@ -95,9 +95,9 @@
         var: etcd_status.stdout_lines
 
     - name: Verify cluster member list
-      ansible.builtin.environment:
-        ETCDCTL_API: "3"
       ansible.builtin.command: "etcdctl --endpoints={{ etcd_endpoints }} member list"
+      environment:
+        ETCDCTL_API: "3"
       register: member_list
       changed_when: false
       run_once: true
@@ -109,9 +109,9 @@
       run_once: true
 
     - name: Check cluster health
-      ansible.builtin.environment:
-        ETCDCTL_API: "3"
       ansible.builtin.command: "etcdctl --endpoints={{ etcd_endpoints }} endpoint health"
+      environment:
+        ETCDCTL_API: "3"
       register: cluster_health
       changed_when: false
       run_once: true
