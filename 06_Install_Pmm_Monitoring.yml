@@ -49,6 +49,8 @@
         jump: ACCEPT
       when: ansible_os_family == "RedHat"
       become: true
+
+    - name: Add Docker GPG key (Debian)
       apt_key:
         url: https://download.docker.com/linux/ubuntu/gpg
         state: present
@@ -135,7 +137,7 @@
 
     - name: Display PMM Server access information
       debug:
-        msg: 
+        msg:
           - "PMM Server is installed and running"
           - "Access PMM Web Interface at: https://{{ pmm_server_ip }}:{{ pmm_server_port }}"
           - "Username: admin"
@@ -153,17 +155,17 @@
         patronictl -c /etc/patroni/patroni.yml list -f json
       register: patroni_status
       changed_when: false
-      
+
     - name: Set facts about primary node
       set_fact:
         is_primary: "{{ (patroni_status.stdout | from_json) | selectattr('Role', 'eq', 'Leader') | map(attribute='Member') | list | first == inventory_hostname }}"
-      
+
     - name: Add primary node to group
       add_host:
         name: "{{ inventory_hostname }}"
         groups: pg_primary
       when: is_primary | bool
-      
+
 - name: Install pg_stat_monitor package on all nodes
   hosts: pg_nodes
   become: true
@@ -175,7 +177,7 @@
       package:
         name: percona-pg_stat_monitor16
         state: present
-      
+
     - name: Enable PMM client repository (Debian/Ubuntu)
       command: percona-release enable pmm3-client release
       args:
@@ -200,7 +202,6 @@
         name: pmm-client
         state: present
       when: ansible_os_family == "RedHat"
-      
 
 - name: Install PMM Client on PostgreSQL Nodes
   hosts: pg_nodes
@@ -231,7 +232,7 @@
         state: present
         update_cache: yes
       when: ansible_os_family == "Debian"
-      
+
     - name: Install PMM Client (RHEL/CentOS)
       dnf:
         name: pmm-client
@@ -244,7 +245,7 @@
       register: create_user_result
       changed_when: create_user_result.rc == 0
       failed_when: false
-      
+
     - name: Update pg_hba.conf to allow PMM user local access
       lineinfile:
         path: "{{ pg_data_dir }}/pg_hba.conf"
