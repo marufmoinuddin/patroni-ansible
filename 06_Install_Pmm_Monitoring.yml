@@ -7,10 +7,17 @@
     pg_pmm_user_password: "StrongPassword123"  # Change this to a secure password
     pmm_admin_password: "NewAdminPassword123"  # Change this to a secure password for PMM admin
     pmm_server_port: 443
+    pmm_server_version: "3"
     scope: "kyc"
     pgversion: "16"
 
   tasks:
+    - name: Install Docker Python module
+      pip:
+        name: docker
+        state: present
+      when: ansible_os_family == "RedHat"
+      tags: docker
     - name: Install Docker prerequisites (Debian/Ubuntu)
       package:
         name:
@@ -75,11 +82,26 @@
         state: started
         enabled: true
 
-    - name: Install PMM Server using Easy-install script
-      shell: |
-        curl -fsSL https://raw.githubusercontent.com/percona/pmm/refs/heads/v3/get-pmm.sh | /bin/bash
-      args:
-        creates: /usr/local/bin/pmm-admin  # Use a different indicator since this is server
+    - name: Pull PMM Server Docker image
+      docker_image:
+        name: "perconalab/pmm-server:{{ pmm_server_version }}"
+        source: pull
+
+    - name: Create PMM data volume if missing
+      docker_volume:
+        name: pmm-data
+        state: present
+
+    - name: Run PMM Server container
+      docker_container:
+        name: pmm-server
+        image: "perconalab/pmm-server:{{ pmm_server_version }}"
+        state: started
+        restart_policy: always
+        ports:
+          - "443:443"
+        volumes:
+          - "pmm-data:/srv"
 
     - name: Wait for PMM Server to become available
       uri:
@@ -94,7 +116,10 @@
 
     - name: Change default admin password
       command: |
-        docker exec -t pmm-server change-admin-password {{ pmm_admin_password }}
+        docker exec pmm-server change-admin-password {{ pmm_admin_password }}
+      register: pmm_pw_change
+      ignore_errors: yes
+      changed_when: pmm_pw_change.rc == 0
 
     - name: Get PMM server IP
       set_fact:
