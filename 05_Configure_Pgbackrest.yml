@@ -7,8 +7,8 @@
     scope: "kyc"
     pgversion: "16"
     repo_path: "/postgres/pgbackup"
-    data_dir: "/postgres/data/{{ pgversion }}/{{ scope }}"
-    ssh_dir: "/var/lib/postgresql/.ssh"
+    data_dir: "{{ '/postgres/data/' ~ pgversion ~ '/' ~ scope if ansible_os_family == 'Debian' else '/var/lib/pgsql/' ~ pgversion ~ '/data/' ~ scope }}"
+    ssh_dir: "{{ '/var/lib/postgresql/.ssh' if ansible_os_family == 'Debian' else '/var/lib/pgsql/.ssh' }}"
 
   tasks:
     - name: Gather facts for all pg_nodes
@@ -60,6 +60,7 @@
       package:
         name: percona-pgbackrest
         state: absent
+      ignore_errors: true
 
     - name: Remove existing pgBackRest related dirs and files
       file:
@@ -71,10 +72,18 @@
         - /postgres/pgbackup
 
     # Install pgBackRest
-    - name: Install pgBackRest
-      package:
+    - name: Install pgBackRest (Debian/Ubuntu)
+      apt:
         name: percona-pgbackrest
         state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Install pgBackRest (RHEL/CentOS)
+      dnf:
+        name: percona-pgbackrest
+        state: present
+      when: ansible_os_family == "RedHat"
 
     # Create repository directory
     - name: Create pgBackRest repository directory
@@ -111,7 +120,6 @@
         - id_rsa
         - id_rsa.pub
       become: true
-
 
     - name: Get pgBackRest server public key
       command: cat {{ ssh_dir }}/id_rsa.pub
@@ -185,8 +193,8 @@
   vars:
     scope: "kyc"
     pgversion: "16"
-    data_dir: "/postgres/data/{{ pgversion }}/{{ scope }}"
-    ssh_dir: "/var/lib/postgresql/.ssh"
+    data_dir: "{{ '/postgres/data/' ~ pgversion ~ '/' ~ scope if ansible_os_family == 'Debian' else '/var/lib/pgsql/' ~ pgversion ~ '/data/' ~ scope }}"
+    ssh_dir: "{{ '/var/lib/postgresql/.ssh' if ansible_os_family == 'Debian' else '/var/lib/pgsql/.ssh' }}"
 
   tasks:
     - name: Get pgBackRest node IP and hostname
@@ -228,6 +236,7 @@
       package:
         name: percona-pgbackrest
         state: absent
+      ignore_errors: true
 
     - name: Remove existing pgBackRest related dirs and files
       file:
@@ -239,11 +248,18 @@
         - /postgres/pgbackup
 
     # Install pgBackRest
-
-    - name: Install pgBackRest
-      package:
+    - name: Install pgBackRest (Debian/Ubuntu)
+      apt:
         name: percona-pgbackrest
         state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Install pgBackRest (RHEL/CentOS)
+      dnf:
+        name: percona-pgbackrest
+        state: present
+      when: ansible_os_family == "RedHat"
 
     # Set up SSH directory and authorized_keys for postgres user
     - name: Create SSH directory for postgres user
@@ -342,10 +358,10 @@
   become: true
   vars:
     scope: "kyc"
-    pgversion: "12"
+    pgversion: "16"
     patroni_config_file: /etc/patroni/patroni.yml
-    data_dir: "/postgres/data/{{ pgversion }}/{{ scope }}"
-    
+    data_dir: "{{ '/postgres/data/' ~ pgversion ~ '/' ~ scope if ansible_os_family == 'Debian' else '/var/lib/pgsql/' ~ pgversion ~ '/data/' ~ scope }}"
+
   tasks:
     - name: Update Patroni configuration for pgBackRest archiving
       command: >
@@ -364,7 +380,7 @@
   hosts: pg_nodes
   become: true
   vars:
-    ssh_dir: "/var/lib/postgresql/.ssh"
+    ssh_dir: "{{ '/var/lib/postgresql/.ssh' if ansible_os_family == 'Debian' else '/var/lib/pgsql/.ssh' }}"
   tasks:
     # Fixed SSH key generation approach for PostgreSQL nodes
     - name: Generate SSH key pair for PostgreSQL nodes

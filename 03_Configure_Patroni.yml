@@ -1,303 +1,352 @@
 ---
-  - name: Configure PostgreSQL and Patroni HA Cluster
-    hosts: pg_nodes
-    become: true
-    gather_facts: true
-    vars:
-      etcd_token: 'PostgreSQL_HA_Cluster_1'
-      etcd_data_dir: '/var/lib/etcd'
-      etcd_nodes: "{{ groups['pg_nodes'] | map('extract', hostvars) | map(attribute='ansible_hostname') | list }}"
-      etcd_ips: "{{ groups['pg_nodes'] | map('extract', hostvars) | map(attribute='ansible_default_ipv4.address') | list }}"
-      etcd_endpoints: "{% for ip in etcd_ips %}http://{{ ip }}:2379{% if not loop.last %},{% endif %}{% endfor %}"
-  
-    tasks:
-      - name: Set node facts
-        set_fact:
-          node_name: "{{ ansible_hostname }}"
-          node_ip: "{{ ansible_default_ipv4.address }}"
-          base_data_dir: "/postgres/data/16"
-          data_dir: "/postgres/data/16/kyc"
-          pg_bin_dir: "/usr/lib/postgresql/16/bin"
-          namespace: "percona_lab"
-          scope: "kyc"
-          is_primary: "{{ inventory_hostname == groups['pg_nodes'][0] }}"
-      
-      # Enhanced Cleanup Section
-      - name: Stop all related services
-        service:
-          name: "{{ item }}"
-          state: stopped
-          enabled: no
-        with_items:
-          - patroni
-          - postgresql
-        ignore_errors: yes
+- name: Configure PostgreSQL and Patroni HA Cluster
+  hosts: pg_nodes
+  become: true
+  gather_facts: true
+  vars:
+    etcd_token: 'PostgreSQL_HA_Cluster_1'
+    etcd_data_dir: '/var/lib/etcd'
+    etcd_nodes: "{{ groups['pg_nodes'] | map('extract', hostvars) | map(attribute='ansible_hostname') | list }}"
+    etcd_ips: "{{ groups['pg_nodes'] | map('extract', hostvars) | map(attribute='ansible_default_ipv4.address') | list }}"
+    etcd_endpoints: "{% for ip in etcd_ips %}http://{{ ip }}:2379{% if not loop.last %},{% endif %}{% endfor %}"
+    pg_version: "16"
+    scope: "kyc"
+    namespace: "percona_lab"
 
-      # PostgreSQL Cluster Removal  
-      - name: Remove the PostgreSQL cluster
-        shell: |
-          sudo pg_dropcluster 16 "{{ scope }}"
-        ignore_errors: yes
+  tasks:
+    - name: Set OS-specific facts
+      set_fact:
+        # Debian/Ubuntu paths
+        base_data_dir_debian: "/postgres/data/{{ pg_version }}"
+        data_dir_debian: "/postgres/data/{{ pg_version }}/{{ scope }}"
+        pg_bin_dir_debian: "/usr/lib/postgresql/{{ pg_version }}/bin"
+        pg_socket_dir_debian: "/var/run/postgresql"
+        pg_service_debian: "postgresql"
+        pg_ctl_debian: "/usr/bin/pg_ctlcluster"
 
-      # PostgreSQL Initialization - ONLY ON PRIMARY
-      - name: Create PostgreSQL cluster using pg_createcluster on primary node only
-        command: sudo pg_createcluster 16 {{ scope }} -d {{ data_dir }}
+        # RHEL/CentOS paths
+        base_data_dir_redhat: "/var/lib/pgsql/{{ pg_version }}"
+        data_dir_redhat: "/var/lib/pgsql/{{ pg_version }}/data/{{ scope }}"
+        pg_bin_dir_redhat: "/usr/pgsql-{{ pg_version }}/bin"
+        pg_socket_dir_redhat: "/var/run/postgresql"
+        pg_service_redhat: "postgresql-{{ pg_version }}"
+        pg_ctl_redhat: "/usr/pgsql-{{ pg_version }}/bin/pg_ctl"
 
-      # Stop the PostgreSQL cluster 
-      - name: Stop the PostgreSQL cluster
-        shell: |
-          sudo /usr/bin/pg_ctlcluster "16-{{ scope }}" stop
-        ignore_errors: yes
+        # Selected based on OS family
+        base_data_dir: "{{ base_data_dir_debian if ansible_os_family == 'Debian' else base_data_dir_redhat }}"
+        data_dir: "{{ data_dir_debian if ansible_os_family == 'Debian' else data_dir_redhat }}"
+        pg_bin_dir: "{{ pg_bin_dir_debian if ansible_os_family == 'Debian' else pg_bin_dir_redhat }}"
+        pg_socket_dir: "{{ pg_socket_dir_debian if ansible_os_family == 'Debian' else pg_socket_dir_redhat }}"
+        pg_service: "{{ pg_service_debian if ansible_os_family == 'Debian' else pg_service_redhat }}"
+        pg_ctl: "{{ pg_ctl_debian if ansible_os_family == 'Debian' else pg_ctl_redhat }}"
+        node_name: "{{ ansible_hostname }}"
+        node_ip: "{{ ansible_default_ipv4.address }}"
+        is_primary: "{{ inventory_hostname == groups['pg_nodes'][0] }}"
 
-      - name: Remove all configuration and data files
-        file:
-          path: "{{ item }}"
-          state: absent
-          force: yes
-        with_items:
-          - /etc/patroni/patroni.yml
-          - /etc/patroni/patroni.yaml
-          - /etc/systemd/system/patroni.service  # Added line
-          - "{{ data_dir }}"
-          - "{{ base_data_dir }}"
-          - /postgres/pgbackup/*
-          - /var/lib/postgresql/12/*
-          - /var/run/postgresql/*
-        ignore_errors: yes
-  
-      - name: Ensure data directory is empty
-        stat:
-          path: "{{ data_dir }}"
-        register: data_dir_stat
-      
-      - name: Remove data directory if it exists
-        command: rm -rf {{ data_dir }}
-        when: data_dir_stat.stat.exists
-  
-      # Enhanced ETCD Cleanup
-      - name: Perform complete ETCD cleanup
-        shell: |
-          for key in \
-            "/{{ namespace }}/{{ scope }}" \
-            "/{{ namespace }}/{{ scope }}/leader" \
-            "/{{ namespace }}/{{ scope }}/system_id" \
-            "/{{ namespace }}/{{ scope }}/initialize" \
-            "/{{ namespace }}/{{ scope }}/members" \
-            "/{{ namespace }}/{{ scope }}/config"
-          do
-            /usr/bin/etcdctl --endpoints="{{ etcd_endpoints }}" del "$key" --prefix
-          done
-        ignore_errors: yes
-  
-      # Verification of Cleanup
-      - name: Verify cleanup
-        block:
-          - name: Check data directory is empty
-            stat:
-              path: "{{ data_dir }}"
-            register: data_dir_stat
-  
-          - name: Check ETCD keys
-            shell: "etcdctl --endpoints='{{ etcd_endpoints }}' get '/{{ namespace }}/{{ scope }}' --prefix | wc -l"
-            register: etcd_keys
-            ignore_errors: yes
-  
-          - name: Display cleanup status
-            debug:
-              msg: 
-                - "Data directory exists: {{ data_dir_stat.stat.exists }}"
-                - "ETCD keys found: {{ etcd_keys.stdout|int }}"
-  
-      - name: Wait for cleanup to settle
-        pause:
-          seconds: 10
-  
-      # Directory Setup
-      - name: Create required directories
-        file:
-          path: "{{ item.path }}"
-          state: directory
-          owner: postgres
-          group: postgres
-          mode: "{{ item.mode }}"
-        with_items:
-          - { path: "{{ base_data_dir }}", mode: '0755' }
-          - { path: "{{ data_dir }}", mode: '0700' }
-          - { path: "/postgres/pgbackup/kyc/archive", mode: '0700' }
-          - { path: "/etc/patroni", mode: '0755' }
-  
-          
-      - name: Create Patroni configuration file
-        blockinfile:
-          path: "/etc/patroni/patroni.yml"
-          create: yes
-          mode: '0644'
-          owner: postgres
-          group: postgres
-          block: |
-            namespace: {{ namespace }}
-            scope: {{ scope }}
-            name: {{ node_name }}
+    - name: Display OS-specific paths
+      debug:
+        msg:
+          - "OS Family: {{ ansible_os_family }}"
+          - "Data dir: {{ data_dir }}"
+          - "Bin dir: {{ pg_bin_dir }}"
+          - "Service: {{ pg_service }}"
 
-            restapi:
-                listen: 0.0.0.0:8008
-                connect_address: {{ node_ip }}:8008
+    # Enhanced Cleanup Section
+    - name: Stop all related services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: stopped
+        enabled: false
+      loop:
+        - patroni
+        - "{{ pg_service }}"
+      ignore_errors: true
 
-            etcd3:
-                host: {{ node_ip }}:2379
+    - name: Remove the PostgreSQL cluster (Debian/Ubuntu - pg_dropcluster)
+      ansible.builtin.shell: |
+        sudo pg_dropcluster {{ pg_version }} "{{ scope }}"
+      ignore_errors: true
+      when: ansible_os_family == "Debian"
 
-            bootstrap:
-              dcs:
-                  ttl: 30
-                  loop_wait: 10
-                  retry_timeout: 10
-                  maximum_lag_on_failover: 1048576
+    - name: Remove the PostgreSQL cluster (RHEL/CentOS - remove data dir)
+      ansible.builtin.file:
+        path: "{{ data_dir }}"
+        state: absent
+        force: yes
+      ignore_errors: true
+      when: ansible_os_family == "RedHat"
 
-                  postgresql:
-                      use_pg_rewind: true
-                      use_slots: true
-                      parameters:
-                          wal_level: replica
-                          hot_standby: "on"
-                          wal_keep_segments: 10
-                          max_wal_senders: 5
-                          max_replication_slots: 10
-                          wal_log_hints: "on"
-                          logging_collector: 'on'
-                          max_wal_size: '10GB'
-                          archive_mode: "on"
-                          archive_timeout: 600s
-                          archive_command: "cp -f %p /home/postgres/archived/%f"
+    # PostgreSQL Initialization - ONLY ON PRIMARY
+    - name: Create PostgreSQL cluster using pg_createcluster on primary node only (Debian/Ubuntu)
+      ansible.builtin.command: sudo pg_createcluster {{ pg_version }} {{ scope }} -d {{ data_dir }}
+      when: ansible_os_family == "Debian" and is_primary
 
-              initdb:
-                  - encoding: UTF8
-                  - data-checksums
+    - name: Initialize PostgreSQL cluster using initdb on primary node only (RHEL/CentOS)
+      ansible.builtin.command: |
+        sudo -u postgres {{ pg_bin_dir }}/initdb -D {{ data_dir }} -E UTF8 --data-checksums
+      when: ansible_os_family == "RedHat" and is_primary
 
-              pg_hba:
-                  - host replication replicator 127.0.0.1/32 trust
-                  - host replication replicator 0.0.0.0/0 md5
-                  - host all all 0.0.0.0/0 md5
-                  - host all all ::0/0 md5
+    # Stop the PostgreSQL cluster
+    - name: Stop the PostgreSQL cluster (Debian/Ubuntu)
+      ansible.builtin.shell: |
+        sudo /usr/bin/pg_ctlcluster "{{ pg_version }}-{{ scope }}" stop
+      ignore_errors: true
+      when: ansible_os_family == "Debian"
 
-              users:
-                  admin:
+    - name: Stop the PostgreSQL cluster (RHEL/CentOS)
+      ansible.builtin.systemd:
+        name: "{{ pg_service }}"
+        state: stopped
+      ignore_errors: true
+      when: ansible_os_family == "RedHat"
+
+    - name: Remove all configuration and data files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+        force: yes
+      loop:
+        - /etc/patroni/patroni.yml
+        - /etc/patroni/patroni.yaml
+        - /etc/systemd/system/patroni.service
+        - "{{ data_dir }}"
+        - "{{ base_data_dir }}"
+        - /postgres/pgbackup/*
+        - /var/lib/postgresql/12/*
+        - /var/run/postgresql/*
+      ignore_errors: yes
+
+    - name: Ensure data directory is empty
+      ansible.builtin.stat:
+        path: "{{ data_dir }}"
+      register: data_dir_stat
+
+    - name: Remove data directory if it exists
+      ansible.builtin.command: rm -rf {{ data_dir }}
+      when: data_dir_stat.stat.exists
+
+    # Enhanced ETCD Cleanup
+    - name: Perform complete ETCD cleanup
+      ansible.builtin.shell: |
+        for key in \
+          "/{{ namespace }}/{{ scope }}" \
+          "/{{ namespace }}/{{ scope }}/leader" \
+          "/{{ namespace }}/{{ scope }}/system_id" \
+          "/{{ namespace }}/{{ scope }}/initialize" \
+          "/{{ namespace }}/{{ scope }}/members" \
+          "/{{ namespace }}/{{ scope }}/config"
+        do
+          /usr/bin/etcdctl --endpoints="{{ etcd_endpoints }}" del "$key" --prefix
+        done
+      ignore_errors: yes
+
+    # Verification of Cleanup
+    - name: Verify cleanup
+      block:
+        - name: Check data directory is empty
+          ansible.builtin.stat:
+            path: "{{ data_dir }}"
+          register: data_dir_stat
+
+        - name: Check ETCD keys
+          ansible.builtin.shell: "etcdctl --endpoints='{{ etcd_endpoints }}' get '/{{ namespace }}/{{ scope }}' --prefix | wc -l"
+          register: etcd_keys
+          ignore_errors: yes
+
+        - name: Display cleanup status
+          ansible.builtin.debug:
+            msg:
+              - "Data directory exists: {{ data_dir_stat.stat.exists }}"
+              - "ETCD keys found: {{ etcd_keys.stdout|int }}"
+
+    - name: Wait for cleanup to settle
+      ansible.builtin.pause:
+        seconds: 10
+
+    # Directory Setup
+    - name: Create required directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: "{{ base_data_dir }}", mode: '0755' }
+        - { path: "{{ data_dir }}", mode: '0700' }
+        - { path: "/postgres/pgbackup/kyc/archive", mode: '0700' }
+        - { path: "/etc/patroni", mode: '0755' }
+        - { path: "{{ pg_socket_dir }}", mode: '0755' }
+
+    - name: Create Patroni configuration file
+      ansible.builtin.blockinfile:
+        path: "/etc/patroni/patroni.yml"
+        create: yes
+        mode: '0644'
+        owner: postgres
+        group: postgres
+        block: |
+          namespace: {{ namespace }}
+          scope: {{ scope }}
+          name: {{ node_name }}
+
+          restapi:
+              listen: 0.0.0.0:8008
+              connect_address: {{ node_ip }}:8008
+
+          etcd3:
+              host: {{ node_ip }}:2379
+
+          bootstrap:
+            dcs:
+                ttl: 30
+                loop_wait: 10
+                retry_timeout: 10
+                maximum_lag_on_failover: 1048576
+
+                postgresql:
+                    use_pg_rewind: true
+                    use_slots: true
+                    parameters:
+                        wal_level: replica
+                        hot_standby: "on"
+                        wal_keep_segments: 10
+                        max_wal_senders: 5
+                        max_replication_slots: 10
+                        wal_log_hints: "on"
+                        logging_collector: 'on'
+                        max_wal_size: '10GB'
+                        archive_mode: "on"
+                        archive_timeout: 600s
+                        archive_command: "cp -f %p /home/postgres/archived/%f"
+
+            initdb:
+                - encoding: UTF8
+                - data-checksums
+
+            pg_hba:
+                - host replication replicator 127.0.0.1/32 trust
+                - host replication replicator 0.0.0.0/0 md5
+                - host all all 0.0.0.0/0 md5
+                - host all all ::0/0 md5
+
+            users:
+                admin:
+                    password: qaz123
+                    options:
+                        - createrole
+                        - createdb
+                percona:
+                    password: qaz123
+                    options:
+                        - createrole
+                        - createdb
+
+          postgresql:
+              cluster_name: cluster_1
+              listen: 0.0.0.0:5432
+              connect_address: {{ node_ip }}:5432
+              data_dir: {{ data_dir }}
+              bin_dir: {{ pg_bin_dir }}
+              pgpass: /tmp/pgpass0
+              authentication:
+                  replication:
+                      username: replicator
+                      password: replPasswd
+                  superuser:
+                      username: postgres
                       password: qaz123
-                      options:
-                          - createrole
-                          - createdb
-                  percona:
-                      password: qaz123
-                      options:
-                          - createrole
-                          - createdb 
+              parameters:
+                  unix_socket_directories: "{{ pg_socket_dir }}"
+              create_replica_methods:
+                  - basebackup
+              basebackup:
+                  checkpoint: 'fast'
 
-            postgresql:
-                cluster_name: cluster_1
-                listen: 0.0.0.0:5432
-                connect_address: {{ node_ip }}:5432
-                data_dir: {{ data_dir }}
-                bin_dir: {{ pg_bin_dir }}
-                pgpass: /tmp/pgpass0
-                authentication:
-                    replication:
-                        username: replicator
-                        password: replPasswd
-                    superuser:
-                        username: postgres
-                        password: qaz123
-                parameters:
-                    unix_socket_directories: "/var/run/postgresql/"
-                create_replica_methods:
-                    - basebackup
-                basebackup:
-                    checkpoint: 'fast'
+          tags:
+              nofailover: false
+              noloadbalance: false
+              clonefrom: false
+              nosync: false
 
-            tags:
-                nofailover: false
-                noloadbalance: false
-                clonefrom: false
-                nosync: false
+    - name: Pause for Patroni to settle
+      ansible.builtin.pause:
+        seconds: 10
 
-      - name: Pause for Patroni to settle
-        pause:
-          seconds: 10 
-  
-      - name: Validate Patroni configuration
-        command: patroni --validate-config /etc/patroni/patroni.yml
-  
-      # Systemd Setup
-      # Update the 'Create Patroni systemd service' task with correct ownership
-      - name: Create Patroni systemd service
-        blockinfile:
-          path: "/etc/systemd/system/patroni.service"
-          create: yes
-          mode: '0644'
-          owner: root  # Corrected owner
-          group: root  # Corrected group
-          block: |
-            [Unit]
-            Description=Runners to orchestrate a high-availability PostgreSQL
-            After=syslog.target network.target etcd.service
-            
-            [Service]
-            Type=simple
-            User=postgres
-            Group=postgres
-            ExecStart=/bin/patroni /etc/patroni/patroni.yml
-            ExecReload=/bin/kill -s HUP $MAINPID
-            KillMode=process
-            TimeoutSec=30
-            Restart=always
-            RestartSec=10s
-            
-            [Install]
-            WantedBy=multi-user.target
-          
-  
-      # Service Management - Starting in the right order
-      - name: Reload systemd daemon
-        systemd:
-          daemon_reload: yes
-  
-      # Start primary first
-      - name: Start Patroni on primary node
-        service:
-          name: patroni
-          state: started
-          enabled: yes
-        when: is_primary
+    - name: Validate Patroni configuration
+      ansible.builtin.command: patroni --validate-config /etc/patroni/patroni.yml
 
-      - name: Wait for primary to initialize
-        pause:
-          seconds: 10
-        when: is_primary
-  
-      # Then start secondaries
-      - name: Start Patroni on replica nodes
-        service:
-          name: patroni
-          state: started
-          enabled: yes
-        when: not is_primary
-  
-      - name: Create patronictl alias
-        blockinfile:
-          path: /etc/profile.d/patroni-alias.sh
-          create: yes
-          mode: '0644'
-          block: |
-            alias patronictl='patronictl -c /etc/patroni/patroni.yml'
-  
-      # Final Verification
-      - name: Wait for cluster to stabilize
-        pause:
-          seconds: 15
-  
-      - name: Check cluster status
-        shell: patronictl -c /etc/patroni/patroni.yml list
-        register: cluster_status
-        ignore_errors: yes
-  
-      - name: Display cluster status
-        debug:
-          var: cluster_status.stdout_lines
+    # Systemd Setup
+    - name: Create Patroni systemd service
+      ansible.builtin.blockinfile:
+        path: "/etc/systemd/system/patroni.service"
+        create: yes
+        mode: '0644'
+        owner: root
+        group: root
+        block: |
+          [Unit]
+          Description=Runners to orchestrate a high-availability PostgreSQL
+          After=syslog.target network.target etcd.service
+
+          [Service]
+          Type=simple
+          User=postgres
+          Group=postgres
+          ExecStart=/bin/patroni /etc/patroni/patroni.yml
+          ExecReload=/bin/kill -s HUP $MAINPID
+          KillMode=process
+          TimeoutSec=30
+          Restart=always
+          RestartSec=10s
+
+          [Install]
+          WantedBy=multi-user.target
+
+    # Service Management - Starting in the right order
+    - name: Reload systemd daemon
+      ansible.builtin.systemd:
+        daemon_reload: yes
+
+    # Start primary first
+    - name: Start Patroni on primary node
+      ansible.builtin.systemd:
+        name: patroni
+        state: started
+        enabled: yes
+      when: is_primary
+
+    - name: Wait for primary to initialize
+      ansible.builtin.pause:
+        seconds: 10
+      when: is_primary
+
+    # Then start secondaries
+    - name: Start Patroni on replica nodes
+      ansible.builtin.systemd:
+        name: patroni
+        state: started
+        enabled: yes
+      when: not is_primary
+
+    - name: Create patronictl alias
+      ansible.builtin.blockinfile:
+        path: /etc/profile.d/patroni-alias.sh
+        create: yes
+        mode: '0644'
+        block: |
+          alias patronictl='patronictl -c /etc/patroni/patroni.yml'
+
+    # Final Verification
+    - name: Wait for cluster to stabilize
+      ansible.builtin.pause:
+        seconds: 15
+
+    - name: Check cluster status
+      ansible.builtin.shell: patronictl -c /etc/patroni/patroni.yml list
+      register: cluster_status
+      ignore_errors: yes
+
+    - name: Display cluster status
+      ansible.builtin.debug:
+        var: cluster_status.stdout_lines

@@ -15,7 +15,7 @@
     wd_priority_base: 1
     # Patroni/PostgreSQL connection info
     scope: "kyc"
-    data_dir: "/postgres/data/{{ pg_version }}/{{ scope }}"
+    data_dir: "{{ '/postgres/data/' ~ pg_version ~ '/' ~ scope if ansible_os_family == 'Debian' else '/var/lib/pgsql/' ~ pg_version ~ '/data/' ~ scope }}"
     patroni_config: "/etc/patroni/patroni.yml"
     # Watchdog settings
     delegate_ip: "{{ vip }}"
@@ -44,6 +44,8 @@
           - "Node: {{ node_name }} ({{ node_ip }})"
           - "Index: {{ node_index }}"
           - "Is first: {{ is_first_node }}"
+          - "OS: {{ ansible_os_family }}"
+          - "Data dir: {{ data_dir }}"
 
     # ============================================================
     # 1. INSTALL PGROOL-II FROM PERCONA / PGDG REPOS
@@ -52,13 +54,26 @@
       command: percona-release setup ppg{{ pg_version }}
       changed_when: false
 
-    - name: Install Pgpool-II and extensions
+    - name: Install Pgpool-II and extensions (Debian/Ubuntu)
       apt:
         name:
           - percona-pgpool{{ pg_version | replace('.', '') }}
           - postgresql-{{ pg_version }}-pgpool2
         state: present
         update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Install Pgpool-II and extensions (RHEL/CentOS)
+      dnf:
+        name:
+          - pgpool2_{{ pg_version }}
+          - pgpool2_{{ pg_version }}-extensions
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    - name: Set Pgpool service name (Debian/Ubuntu = pgpool2, RHEL/CentOS = pgpool)
+      set_fact:
+        pgpool_service: "{{ 'pgpool2' if ansible_os_family == 'Debian' else 'pgpool' }}"
 
     # ============================================================
     # 2. CREATE PGROOL ADMIN / HEALTH CHECK USERS IN POSTGRESQL
@@ -511,13 +526,13 @@
     # ============================================================
     - name: Create systemd directory for pgpool
       file:
-        path: /etc/systemd/system/pgpool2.service.d
+        path: /etc/systemd/system/{{ pgpool_service }}.service.d
         state: directory
         mode: '0755'
 
     - name: Create systemd override for VIP (requires CAP_NET_ADMIN)
       copy:
-        dest: /etc/systemd/system/pgpool2.service.d/vip.conf
+        dest: /etc/systemd/system/{{ pgpool_service }}.service.d/vip.conf
         content: |
           [Service]
           # Allow pgpool to manage VIP via ifconfig/ip/arping
@@ -548,12 +563,12 @@
     # ============================================================
     - name: Enable pgpool service
       systemd:
-        name: pgpool2
+        name: "{{ pgpool_service }}"
         enabled: yes
 
     - name: Start pgpool service
       systemd:
-        name: pgpool2
+        name: "{{ pgpool_service }}"
         state: started
 
     # ============================================================
@@ -589,5 +604,5 @@
   handlers:
     - name: restart pgpool
       systemd:
-        name: pgpool2
+        name: "{{ pgpool_service }}"
         state: restarted

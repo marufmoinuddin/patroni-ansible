@@ -11,7 +11,7 @@
     pgversion: "16"
 
   tasks:
-    - name: Install Docker prerequisites
+    - name: Install Docker prerequisites (Debian/Ubuntu)
       package:
         name:
           - apt-transport-https
@@ -20,26 +20,54 @@
           - software-properties-common
           - gnupg
         state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Install Docker prerequisites (RHEL/CentOS)
+      package:
+        name:
+          - yum-utils
+          - curl
+          - wget
+        state: present
+      when: ansible_os_family == "RedHat"
 
     - name: Add Docker GPG key (Debian)
       apt_key:
         url: https://download.docker.com/linux/ubuntu/gpg
         state: present
-      
+      when: ansible_os_family == "Debian"
 
     - name: Add Docker repository (Debian)
       apt_repository:
         repo: "deb [arch=amd64] https://download.docker.com/linux/{{ ansible_distribution | lower }} {{ ansible_distribution_release }} stable"
         state: present
-      
+      when: ansible_os_family == "Debian"
 
-    - name: Install Docker
+    - name: Add Docker repository (RHEL/CentOS)
+      shell: |
+        yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+      args:
+        creates: /etc/yum.repos.d/docker-ce.repo
+      when: ansible_os_family == "RedHat"
+
+    - name: Install Docker (Debian)
       package:
         name:
           - docker-ce
           - docker-ce-cli
           - containerd.io
         state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Install Docker (RHEL/CentOS)
+      package:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "RedHat"
 
     - name: Start Docker service
       systemd:
@@ -67,7 +95,6 @@
     - name: Change default admin password
       command: |
         docker exec -t pmm-server change-admin-password {{ pmm_admin_password }}
-
 
     - name: Get PMM server IP
       set_fact:
@@ -116,24 +143,46 @@
         name: percona-pg-stat-monitor16
         state: present
       
-    - name: Install PMM Client repository
+    - name: Install PMM Client repository (Debian/Ubuntu)
       shell: |
         wget -O - https://repo.percona.com/apt/percona-release_latest.generic_all.deb > /tmp/percona-release.deb
         dpkg -i /tmp/percona-release.deb
         rm -f /tmp/percona-release.deb
       args:
         creates: /usr/bin/percona-release
-        
+      when: ansible_os_family == "Debian"
+
+    - name: Install PMM Client repository (RHEL/CentOS)
+      shell: |
+        wget -O - https://repo.percona.com/yum/percona-release-latest.noarch.rpm > /tmp/percona-release.rpm
+        yum -y install /tmp/percona-release.rpm
+        rm -f /tmp/percona-release.rpm
+      args:
+        creates: /usr/bin/percona-release
+      when: ansible_os_family == "RedHat"
+
     - name: Enable PMM client repository
       command: percona-release enable pmm3-client release
       args:
         creates: /etc/apt/sources.list.d/percona-pmm3-client-release.list
-        
-    - name: Install PMM Client
+      when: ansible_os_family == "Debian"
+
+    - name: Enable PMM client repository (RHEL/CentOS)
+      command: percona-release enable pmm3-client release
+      when: ansible_os_family == "RedHat"
+
+    - name: Install PMM Client (Debian)
       apt:
         name: pmm-client
         state: present
         update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Install PMM Client (RHEL/CentOS)
+      dnf:
+        name: pmm-client
+        state: present
+      when: ansible_os_family == "RedHat"
       
 
 - name: Install PMM Client on PostgreSQL Nodes
@@ -146,19 +195,29 @@
     pmm_server_port: 443
     scope: "kyc"
     pgversion: "16"
-    pg_data_dir: "/postgres/data/{{ pgversion }}/{{ scope }}"
+    pg_data_dir: "{{ '/postgres/data/' ~ pgversion ~ '/' ~ scope if ansible_os_family == 'Debian' else '/var/lib/pgsql/' ~ pgversion ~ '/data/' ~ scope }}"
 
   tasks:
-    - name: Enable PMM client repository
+    - name: Enable PMM client repository (Debian)
       command: percona-release enable pmm3-client release
+      when: ansible_os_family == "Debian"
 
+    - name: Enable PMM client repository (RHEL/CentOS)
+      command: percona-release enable pmm3-client release
+      when: ansible_os_family == "RedHat"
 
     - name: Install PMM Client (Debian)
       apt:
         name: pmm-client
         state: present
         update_cache: yes
+      when: ansible_os_family == "Debian"
       
+    - name: Install PMM Client (RHEL/CentOS)
+      dnf:
+        name: pmm-client
+        state: present
+      when: ansible_os_family == "RedHat"
 
     - name: Create PostgreSQL monitoring user using shell
       shell: |
@@ -240,4 +299,3 @@
     - name: Show PMM Client status
       debug:
         msg: "{{ pmm_status.stdout_lines }}"
-

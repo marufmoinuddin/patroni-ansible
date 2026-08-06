@@ -12,19 +12,27 @@
     etcd_endpoints: "{% for ip in etcd_ips %}http://{{ ip }}:2379{% if not loop.last %},{% endif %}{% endfor %}"
 
   tasks:
-    - name: Install ETCD package
-      apt:
+    - name: Install ETCD package (Debian/Ubuntu)
+      ansible.builtin.apt:
         name: etcd
         state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Install ETCD package (RHEL/CentOS)
+      ansible.builtin.dnf:
+        name: etcd
+        state: present
+      when: ansible_os_family == "RedHat"
 
     - name: Create ETCD data directory
-      file:
+      ansible.builtin.file:
         path: "{{ etcd_data_dir }}"
         state: directory
         mode: '0755'
 
     - name: Create systemd service file
-      copy:
+      ansible.builtin.copy:
         dest: /etc/systemd/system/etcd.service
         content: |
           [Unit]
@@ -58,58 +66,58 @@
         mode: '0644'
 
     - name: Reload systemd configuration
-      systemd:
+      ansible.builtin.systemd:
         daemon_reload: yes
 
     - name: Enable ETCD service
-      systemd:
+      ansible.builtin.systemd:
         name: etcd
         enabled: yes
 
     - name: Start ETCD service
-      systemd:
+      ansible.builtin.systemd:
         name: etcd
         state: started
 
     # Verification Tasks
     - name: Delay 30 seconds for ETCD service to start
-      pause:
+      ansible.builtin.pause:
         seconds: 30
 
     - name: Check ETCD service status
-      command: systemctl status etcd
+      ansible.builtin.command: systemctl status etcd
       register: etcd_status
       changed_when: false
       ignore_errors: true
 
     - name: Display ETCD service status
-      debug:
+      ansible.builtin.debug:
         var: etcd_status.stdout_lines
 
     - name: Verify cluster member list
-      environment:
+      ansible.builtin.environment:
         ETCDCTL_API: "3"
-      command: "etcdctl --endpoints={{ etcd_endpoints }} member list"
+      ansible.builtin.command: "etcdctl --endpoints={{ etcd_endpoints }} member list"
       register: member_list
       changed_when: false
       run_once: true
       ignore_errors: true
 
     - name: Display cluster member list
-      debug:
+      ansible.builtin.debug:
         var: member_list.stdout_lines
       run_once: true
 
     - name: Check cluster health
-      environment:
+      ansible.builtin.environment:
         ETCDCTL_API: "3"
-      command: "etcdctl --endpoints={{ etcd_endpoints }} endpoint health"
+      ansible.builtin.command: "etcdctl --endpoints={{ etcd_endpoints }} endpoint health"
       register: cluster_health
       changed_when: false
       run_once: true
       ignore_errors: true
 
     - name: Display cluster health
-      debug:
+      ansible.builtin.debug:
         var: cluster_health.stdout_lines
       run_once: true
