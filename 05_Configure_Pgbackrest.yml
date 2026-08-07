@@ -429,12 +429,52 @@
         group: postgres
         mode: '0600'
 
+    # RHEL/CentOS: SELinux blocks sshd from reading authorized_keys with wrong context.
+    # The .ssh dir created via Ansible gets postgresql_db_t; relabel to ssh_home_t.
+    - name: Relabel .ssh directory for SELinux (RHEL/CentOS)
+      command: restorecon -Rv {{ ssh_dir }}
+      changed_when: false
+      when: ansible_os_family == "RedHat"
+
 - name: Now start stanza creation
   hosts: pg_backrest
   become: true
   vars:
     scope: "kyc"
+    ssh_dir: "{{ '/var/lib/postgresql/.ssh' if ansible_os_family == 'Debian' else '/var/lib/pgsql/.ssh' }}"
   tasks:
+    # pgBackRest connects OUT to each DB node; add all pg_node host keys to its known_hosts.
+    # Use the .home.local fqdns from pg_nodes (matches pgbackrest.conf pgN-host values).
+    - name: Add all PostgreSQL node hosts to pgBackRest known_hosts
+      shell: |
+        sudo -u postgres ssh-keyscan -t rsa {{ item }} >> {{ ssh_dir }}/known_hosts
+      loop: "{{ pg_nodes | map(attribute='fqdn') | list }}"
+      args:
+        creates: "{{ ssh_dir }}/known_hosts"
+
+    - name: Ensure known_hosts has proper permissions (pgBackRest node)
+      file:
+        path: "{{ ssh_dir }}/known_hosts"
+        owner: postgres
+        group: postgres
+        mode: '0600'
+
+    # RHEL/CentOS: relabel pgBackRest node's .ssh dir for SELinux
+    - name: Relabel .ssh directory for SELinux (pgBackRest node, RHEL/CentOS)
+      command: restorecon -Rv {{ ssh_dir }}
+      changed_when: false
+      when: ansible_os_family == "RedHat"
+
+    - name: Create pgBackRest stanza
+      command: sudo -iu postgres pgbackrest --stanza={{ scope }} stanza-create
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Take initial full backup
+      command: sudo -iu postgres pgbackrest --stanza={{ scope }} --type=full backup
+      changed_when: false
+      ignore_errors: yes
+
     - name: Print message for stanza creation
       debug:
         msg: "You need to create the pgBackRest stanza manually by running: sudo -iu postgres pgbackrest --stanza={{ scope }} stanza-create"
