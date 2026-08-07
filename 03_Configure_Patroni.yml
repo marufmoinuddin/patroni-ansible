@@ -42,7 +42,7 @@
         cpu_cores: "{{ ansible_processor_cores | default(ansible_processor_vcpus | default(4)) }}"
         # Map credentials.yaml vars to playbook vars
         scope: "{{ patroni_scope }}"
-        # Intermediate: cpu * 50
+        # Intermediate: cpu * 50 (as integer)
         _cpu50: "{{ (ansible_processor_cores | default(4) * 50) | int }}"
 
     - name: Calculate memory-based settings (step 2)
@@ -61,9 +61,9 @@
 
     - name: Calculate max_connections (step 3 - needs _cpu50 from step 1)
       set_fact:
-        # max_connections: min(200, max(100, cpu*50))
-        _max100_cpu50: "{{ 100 if _cpu50 < 100 else _cpu50 }}"
-        pg_max_connections: "{{ 200 if _max100_cpu50 > 200 else _max100_cpu50 }}"
+        # max_connections: min(200, max(100, cpu*50)) - explicit int casting
+        _max100_cpu50: "{{ 100 if (_cpu50 | int) < 100 else (_cpu50 | int) }}"
+        pg_max_connections: "{{ 200 if (_max100_cpu50 | int) > 200 else (_max100_cpu50 | int) }}"
 
     - name: Calculate derived parameters (step 4 - needs pg_max_connections, pg_shared_buffers_mb)
       set_fact:
