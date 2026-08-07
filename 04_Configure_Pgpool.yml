@@ -86,13 +86,14 @@
     # We must target the *current* Patroni leader (which may not be db1 after failover).
     - name: Discover current Patroni leader via REST API
       shell: |
-        for ip in 192.168.122.150 192.168.122.151 192.168.122.152; do
-          role=$(curl -s --connect-timeout 3 "http://$ip:8008/patroni" 2>/dev/null | python3 -c "import sys, json; data = json.load(sys.stdin); print(data.get('role', ''))" 2>/dev/null)
-          if [ "$role" = "primary" ]; then
-            echo "$ip"
-            exit 0
-          fi
-        done
+        {% for host in groups['pg_nodes'] %}
+        ip={{ hostvars[host]['ansible_host'] }}
+        role=$(curl -s --connect-timeout 3 "http://$ip:8008/patroni" 2>/dev/null | python3 -c "import sys, json; data = json.load(sys.stdin); print(data.get('role', ''))" 2>/dev/null)
+        if [ "$role" = "primary" ]; then
+          echo "{{ host }}"
+          exit 0
+        fi
+        {% endfor %}
         exit 1
       register: patroni_leader_result
       changed_when: false
