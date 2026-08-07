@@ -300,24 +300,27 @@
           # WATCHDOG CONFIGURATION - OS-conditional
           # ============================================================
           {% if ansible_os_family == "Debian" %}
-          # Debian native pgpool2 4.3.5: legacy watchdog params in pgpool.conf
+          # Debian native pgpool2 4.3.5: watchdog params in pgpool.conf
+          # (verified against /usr/share/doc/pgpool2/examples/pgpool.conf.sample)
           use_watchdog = on
           wd_lifecheck_method = heartbeat
           wd_monitoring_interfaces_list = '{{ vip_interface }}'
-          # Watchdog nodes - legacy names (wd_hostnameN, wd_port, wd_priorityN, wd_authkeyN)
+          # Watchdog nodes (hostnameN, wd_portN, pgpool_portN - same as 4.7)
           {% for node in groups['pg_nodes'] %}
-          wd_hostname{{ loop.index0 }} = '{{ hostvars[node]['ansible_default_ipv4']['address'] }}'
+          hostname{{ loop.index0 }} = '{{ hostvars[node]['ansible_default_ipv4']['address'] }}'
           wd_port{{ loop.index0 }} = {{ wd_port }}
           pgpool_port{{ loop.index0 }} = {{ pgpool_port }}
           {% endfor %}
-          wd_priority0 = {{ wd_priority_base + (3 - (node_index | int)) }}
-          wd_authkey0 = ''
-          # Heartbeat lifecheck - legacy names (4.3: heartbeat_interfaceN)
+          # Local node priority + auth key (single params, not indexed)
+          wd_priority = {{ wd_priority_base + (3 - (node_index | int)) }}
+          wd_authkey = ''
+          # Heartbeat lifecheck (heartbeat_hostnameN/portN/deviceN - same as 4.7)
           {% for node in groups['pg_nodes'] %}
-          heartbeat_destination{{ loop.index0 }} = '{{ hostvars[node]['ansible_default_ipv4']['address'] }}'
-          heartbeat_destination_port{{ loop.index0 }} = {{ wd_port }}
-          heartbeat_interface{{ loop.index0 }} = '{{ vip_interface }}'
+          heartbeat_hostname{{ loop.index0 }} = '{{ hostvars[node]['ansible_default_ipv4']['address'] }}'
+          heartbeat_port{{ loop.index0 }} = {{ wd_port }}
+          heartbeat_device{{ loop.index0 }} = '{{ vip_interface }}'
           {% endfor %}
+          # Virtual IP - 4.3.5 uses delegate_IP (uppercase IP)
           delegate_IP = '{{ vip }}'
           {% else %}
           # RHEL/CentOS Percona pgpool-II 4.7+: modern params in pgpool.conf
