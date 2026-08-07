@@ -4,7 +4,7 @@
   become: true
   gather_facts: true
   vars_files:
-    - credentials.yaml
+    - variables.yaml
   vars:
     pg_pmm_user_password: "{{ pg_pmm_user_password }}"
     pmm_admin_password: "{{ pmm_admin_password }}"
@@ -223,7 +223,7 @@
   hosts: pg_nodes
   become: true
   vars_files:
-    - credentials.yaml
+    - variables.yaml
   vars:
     pg_pmm_user_password: "{{ pg_pmm_user_password }}"
     pmm_server_host: "{{ hostvars[groups['pg_backrest'][0]]['ansible_default_ipv4']['address'] }}"
@@ -308,7 +308,7 @@
   hosts: pg_nodes
   become: true
   vars_files:
-    - credentials.yaml
+    - variables.yaml
   vars:
     pg_pmm_user_password: "{{ pg_pmm_user_password }}"
     pmm_server_host: "{{ hostvars[groups['pg_backrest'][0]]['ansible_default_ipv4']['address'] }}"

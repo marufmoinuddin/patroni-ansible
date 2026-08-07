@@ -4,7 +4,7 @@
   become: true
   gather_facts: true
   vars_files:
-    - credentials.yaml
+    - variables.yaml
   vars:
     scope: "{{ patroni_scope }}"
     pgversion: "{{ pg_version }}"

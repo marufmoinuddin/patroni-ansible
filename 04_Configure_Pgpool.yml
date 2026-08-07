@@ -4,9 +4,9 @@
   become: true
   gather_facts: true
   vars_files:
-    - credentials.yaml
+    - variables.yaml
   vars:
-    # OS-specific paths (computed from credentials.yaml vars)
+    # OS-specific paths (computed from variables.yaml vars)
     data_dir: "{{ '/postgres/data/' ~ pg_version ~ '/' ~ patroni_scope if ansible_os_family == 'Debian' else '/var/lib/pgsql/' ~ pg_version ~ '/data/' ~ patroni_scope }}"
     patroni_config: "/etc/patroni/patroni.yml"
     pgpool_conf_dir: "{{ '/etc/pgpool2' if ansible_os_family == 'Debian' else '/etc/pgpool-II' }}"
@@ -16,7 +16,7 @@
     if_cmd_path: "/usr/sbin"
     arping_path: "/usr/sbin"
     psql_path: "{{ '/usr/bin/psql' if ansible_os_family == 'Debian' else '/usr/pgsql-16/bin/psql' }}"
-    # Pgpool users (from credentials.yaml)
+    # Pgpool users (from variables.yaml)
     pgpool_admin_user: "pgpool_admin"
     pgpool_admin_password: "{{ pgpool_admin_password }}"
     pcp_user: "{{ pcp_user }}"
@@ -41,7 +41,7 @@
         node_index: "{{ groups['pg_nodes'].index(inventory_hostname) + 1 }}"
         is_first_node: "{{ inventory_hostname == groups['pg_nodes'][0] }}"
         # Auto-detect the default NIC (eth0 on CentOS Stream 9, enp3s0 on
-        # Debian 12); optional vip_interface_override in credentials.yaml
+        # Debian 12); optional vip_interface_override in variables.yaml
         # forces a specific NIC.
         vip_interface: "{{ vip_interface_override | default(ansible_default_ipv4.interface) }}"
 

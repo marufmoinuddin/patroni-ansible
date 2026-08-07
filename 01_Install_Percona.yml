@@ -3,7 +3,7 @@
   hosts: pg_nodes
   become: true
   vars_files:
-    - credentials.yaml
+    - variables.yaml
   tasks:
     - name: Ensure en_US.UTF-8 is uncommented in /etc/locale.gen
       ansible.builtin.lineinfile:
@@ -47,7 +47,7 @@
   hosts: all
   become: true
   vars_files:
-    - credentials.yaml
+    - variables.yaml
   tasks:
     - name: Stop and disable Patroni, PostgreSQL, Pgpool services
       ansible.builtin.systemd:
@@ -199,7 +199,7 @@
   hosts: all
   become: true
   vars_files:
-    - credentials.yaml
+    - variables.yaml
   tasks:
     - name: Install curl and wget (Debian/Ubuntu)
       ansible.builtin.apt:

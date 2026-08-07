@@ -654,21 +654,21 @@ ssh-copy-id root@192.168.122.153
 
 ### Step 3 — Adjust Variables (Important!)
 
-All secrets are now managed in a separate **`credentials.yaml`** file (not committed to git). This allows you to encrypt it with `ansible-vault` and keep passwords out of playbooks.
+All secrets are now managed in a separate **`variables.yaml`** file (not committed to git). This allows you to encrypt it with `ansible-vault` and keep passwords out of playbooks.
 
 **Quick start:**
 ```bash
 # 1. Copy the example and edit with your real values
-cp credentials.yaml.example credentials.yaml
-vim credentials.yaml
+cp variables.yaml.example variables.yaml
+vim variables.yaml
 
 # 2. (Recommended) Encrypt it with ansible-vault
-ansible-vault encrypt credentials.yaml
+ansible-vault encrypt variables.yaml
 
-# 3. Edit later with: ansible-vault edit credentials.yaml
+# 3. Edit later with: ansible-vault edit variables.yaml
 ```
 
-**These are the values you most likely need to change in `credentials.yaml`:**
+**These are the values you most likely need to change in `variables.yaml`:**
 
 | Variable | Description | Example |
 |----------|-------------|---------|
@@ -684,7 +684,7 @@ ansible-vault encrypt credentials.yaml
 | `vip_address` | Floating Virtual IP | `192.168.122.200` |
 | `vip_interface` | NIC for VIP (check `ip link`) | `eth0` |
 
-> ⚠️ **Never commit `credentials.yaml` to git** — it's in `.gitignore`. Only commit `credentials.yaml.example`.
+> ⚠️ **Never commit `variables.yaml` to git** — it's in `.gitignore`. Only commit `variables.yaml.example`.
 
 ### Step 4 — Run the Deployment
 
@@ -693,7 +693,7 @@ ansible-vault encrypt credentials.yaml
 ansible-playbook -i hosts site.yml --syntax-check
 
 # Run everything (this takes ~10-15 minutes)
-# If you encrypted credentials.yaml with ansible-vault:
+# If you encrypted variables.yaml with ansible-vault:
 ansible-playbook -i hosts site.yml --ask-vault-pass
 
 # If you did NOT encrypt (not recommended for production):
@@ -1689,9 +1689,9 @@ patronictl -c /etc/patroni/patroni.yml list
 
 ## 13. Security Notes — Change These Before Production
 
-⚠️ **All secrets are now managed in `credentials.yaml` (not in playbooks).** The repository ships with `credentials.yaml.example` containing placeholder values. **Copy it to `credentials.yaml`, fill in your real passwords, and encrypt with `ansible-vault` before production use:**
+⚠️ **All secrets are now managed in `variables.yaml` (not in playbooks).** The repository ships with `variables.yaml.example` containing placeholder values. **Copy it to `variables.yaml`, fill in your real passwords, and encrypt with `ansible-vault` before production use:**
 
-| Variable in `credentials.yaml` | Purpose | Production Value |
+| Variable in `variables.yaml` | Purpose | Production Value |
 |-------------------------------|---------|------------------|
 | `postgres_password` | PostgreSQL superuser | **Strong random** |
 | `replicator_password` | Streaming replication user | **Strong random** |
@@ -1705,8 +1705,8 @@ patronictl -c /etc/patroni/patroni.yml list
 
 **Best practices:**
 
-- Use **Ansible Vault** for the entire `credentials.yaml`: `ansible-vault encrypt credentials.yaml` — then run playbooks with `--ask-vault-pass`
-- **Never commit `credentials.yaml` to git** — it's in `.gitignore`. Only `credentials.yaml.example` is committed.
+- Use **Ansible Vault** for the entire `variables.yaml`: `ansible-vault encrypt variables.yaml` — then run playbooks with `--ask-vault-pass`
+- **Never commit `variables.yaml` to git** — it's in `.gitignore`. Only `variables.yaml.example` is committed.
 - Restrict firewall rules to the **cluster subnet** only
 - Never expose etcd (:2379/2380), Patroni REST (:8008), or PostgreSQL (:5432) to the public internet — only the pgpool VIP (:9999) and PMM (:443) should be reachable by application/admin networks
 - Put the `pgpass` file somewhere private with `0600` permissions (the playbook uses `/tmp/pgpass0` for bootstrap simplicity — move it after first boot if you prefer)
