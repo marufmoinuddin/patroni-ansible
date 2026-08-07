@@ -56,7 +56,6 @@
     - name: Install Pgpool-II (Debian/Ubuntu)
       apt:
         name:
-          - percona-pgpool16
           - postgresql-16-pgpool2
         state: present
         update_cache: yes

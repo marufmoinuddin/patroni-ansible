@@ -846,7 +846,7 @@ percona-release setup ppg-16
 apt update && apt install -y \
   percona-postgresql-16 \
   percona-patroni etcd \
-  percona-pgpool16 postgresql-16-pgpool2 \
+  postgresql-16-pgpool2 \
   percona-pgbackrest
 ```
 
