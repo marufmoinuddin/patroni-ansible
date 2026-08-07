@@ -726,7 +726,23 @@ Only play 02 wipes etcd data **by design** (it bootstraps a fresh cluster). If y
 
 ## 9. Deployment Method B — Manual (No Ansible)
 
-Prefer to see every screw and bolt? This section walks through exactly what the playbooks automate, hand-by-hand. Run these on **all nodes** unless stated otherwise. Commands assume CentOS Stream 9 / RHEL-family with `dnf`.
+Prefer to see every screw and bolt? This section walks through exactly what the playbooks automate, hand-by-hand. Run these on **all nodes** unless stated otherwise.
+
+**Pick your distro family** — commands differ only in package management and a few paths. The logic (etcd → Patroni → pgpool → pgBackRest → PMM) is identical.
+
+| Area | RHEL / CentOS / Stream 9 | Debian / Ubuntu (22.04, 24.04) |
+|------|-------------------------|--------------------------------|
+| Package manager | `dnf` | `apt` (with `apt update`) |
+| Percona repo | RPM + `percona-release setup ppg-16` | `.deb` + `percona-release setup ppg-16` |
+| PostgreSQL data dir | `/var/lib/pgsql/16/data/kyc` | `/postgres/data/16/kyc` |
+| PostgreSQL bin dir | `/usr/pgsql-16/bin` | `/usr/lib/postgresql/16/bin` |
+| PostgreSQL service | `postgresql-16` (systemd) | `postgresql` (via `pg_ctlcluster`) |
+| Patroni binary | `/usr/bin/patroni` | `/bin/patroni` |
+| Pgpool config dir | `/etc/pgpool-II` | `/etc/pgpool2` |
+| Pgpool service name | `pgpool` | `pgpool2` |
+| Postgres user home | `/var/lib/pgsql` | `/var/lib/postgresql` |
+
+---
 
 ### Phase 0 — OS Preparation (all 4 nodes)
 
@@ -744,15 +760,30 @@ cat >> /etc/hosts <<'EOF'
 EOF
 
 # 3. Firewall: open cluster ports (between nodes)
+# RHEL/CentOS:
 firewall-cmd --permanent --add-port={2379,2380}/tcp
 firewall-cmd --permanent --add-port=5432/tcp
 firewall-cmd --permanent --add-port=8008/tcp
 firewall-cmd --permanent --add-port=9000/tcp
 firewall-cmd --permanent --add-port={9898,9999}/tcp
 firewall-cmd --reload
+
+# Debian/Ubuntu (UFW):
+ufw allow 2379/tcp
+ufw allow 2380/tcp
+ufw allow 5432/tcp
+ufw allow 8008/tcp
+ufw allow 9000/tcp
+ufw allow 9898/tcp
+ufw allow 9999/tcp
+ufw --force enable
 ```
 
+---
+
 ### Phase 1 — Install Percona Packages (all 3 DB nodes + backup node)
+
+#### RHEL / CentOS / Stream 9
 
 ```bash
 # 1. Enable EPEL and CRB (CodeReady Builder) — needed for libssh2 etc.
@@ -773,6 +804,29 @@ dnf install -y \
   percona-pgbackrest
 ```
 
+#### Debian / Ubuntu
+
+```bash
+# 1. Install prerequisites
+apt update && apt install -y curl wget gnupg2
+
+# 2. Download and install Percona release .deb
+wget https://repo.percona.com/apt/percona-release_latest.generic_all.deb
+apt install -y ./percona-release_latest.generic_all.deb
+
+# 3. Enable the PostgreSQL 16 Percona repository
+percona-release setup ppg-16
+
+# 4. Install everything
+apt update && apt install -y \
+  percona-postgresql-16 \
+  percona-patroni etcd \
+  percona-pgpool16 postgresql-16-pgpool2 \
+  percona-pgbackrest
+```
+
+---
+
 ### Phase 2 — etcd Cluster (db1, db2, db3)
 
 Create `/etc/etcd/etcd.conf` — the token and member IPs **must be identical** on all three nodes; only `name` and `initial-advertise-peer-urls` differ:
@@ -792,8 +846,44 @@ ETCD_INITIAL_CLUSTER_TOKEN="PostgreSQL_HA_Cluster_1"
 
 > Swap `ETCD_NAME` and the two `...ADVERTISE...` values on db2 (`192.168.122.151`) and db3 (`192.168.122.152`).
 
+Create the systemd unit (identical on both distros):
+
+```bash
+cat > /etc/systemd/system/etcd.service <<'EOF'
+[Unit]
+Description=etcd key-value store
+Documentation=https://etcd.io/docs/
+After=network.target
+
+[Service]
+Environment="TOKEN=PostgreSQL_HA_Cluster_1"
+Environment="CLUSTER_STATE=new"
+Environment="THIS_NAME={{ ansible_hostname }}"
+Environment="THIS_IP={{ ansible_default_ipv4.address }}"
+Environment="CLUSTER=db1=http://192.168.122.150:2380,db2=http://192.168.122.151:2380,db3=http://192.168.122.152:2380"
+
+ExecStart=/usr/bin/etcd \
+  --data-dir=/var/lib/etcd \
+  --name ${THIS_NAME} \
+  --initial-advertise-peer-urls http://${THIS_IP}:2380 \
+  --listen-peer-urls http://${THIS_IP}:2380 \
+  --advertise-client-urls http://${THIS_IP}:2379 \
+  --listen-client-urls http://${THIS_IP}:2379 \
+  --initial-cluster ${CLUSTER} \
+  --initial-cluster-state ${CLUSTER_STATE} \
+  --initial-cluster-token ${TOKEN}
+
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
 ```bash
 # Start etcd on ALL THREE nodes (roughly together — quorum needs 2/3)
+systemctl daemon-reload
 systemctl enable --now etcd
 
 # Verify quorum from any node
@@ -801,6 +891,8 @@ ETCDCTL_API=3 etcdctl --endpoints=http://192.168.122.150:2379 endpoint health
 ETCDCTL_API=3 etcdctl --endpoints=http://192.168.122.150:2379 member list
 # All 3 members must show "healthy: true"
 ```
+
+---
 
 ### Phase 3 — Patroni + PostgreSQL (db1, db2, db3)
 
@@ -872,8 +964,8 @@ postgresql:
   cluster_name: cluster_1
   listen: 0.0.0.0:5432
   connect_address: 192.168.122.150:5432   # this node's IP
-  data_dir: /postgres/data/16/kyc
-  bin_dir: /usr/pgsql-16/bin
+  data_dir: /postgres/data/16/kyc         # DEBIAN PATH — change for RHEL below
+  bin_dir: /usr/lib/postgresql/16/bin      # DEBIAN PATH — change for RHEL below
   pgpass: /tmp/pgpass0
   authentication:
     replication:
@@ -896,13 +988,20 @@ tags:
   nosync: false
 ```
 
-Create the data directories and the systemd unit:
+> 📋 **Path differences for `patroni.yml`:**
+> - **RHEL/CentOS:** `data_dir: /var/lib/pgsql/16/data/kyc`, `bin_dir: /usr/pgsql-16/bin`
+> - **Debian/Ubuntu:** `data_dir: /postgres/data/16/kyc`, `bin_dir: /usr/lib/postgresql/16/bin`
+
+#### Initialize PostgreSQL + systemd unit
+
+##### RHEL / CentOS / Stream 9
 
 ```bash
-mkdir -p /postgres/data/16 /etc/patroni
-chown -R postgres:postgres /postgres
+# Data directory will be created by Patroni on bootstrap
+mkdir -p /var/lib/pgsql/16 /etc/patroni
+chown -R postgres:postgres /var/lib/pgsql
 
-# systemd unit
+# systemd unit (Patroni binary at /usr/bin/patroni)
 cat > /etc/systemd/system/patroni.service <<'EOF'
 [Unit]
 Description=Runners to orchestrate a high-availability PostgreSQL
@@ -926,7 +1025,44 @@ EOF
 systemctl daemon-reload
 ```
 
-**Bootstrap the cluster — start the primary FIRST:**
+##### Debian / Ubuntu
+
+```bash
+# Create the cluster with pg_createcluster (on PRIMARY ONLY - db1)
+mkdir -p /postgres/data/16 /etc/patroni
+chown -R postgres:postgres /postgres
+
+# On PRIMARY (db1) only:
+pg_createcluster 16 kyc -d /postgres/data/16/kyc
+
+# Stop it so Patroni can take over
+pg_ctlcluster 16 kyc stop
+
+# systemd unit (Patroni binary at /bin/patroni)
+cat > /etc/systemd/system/patroni.service <<'EOF'
+[Unit]
+Description=Runners to orchestrate a high-availability PostgreSQL
+After=syslog.target network.target etcd.service
+
+[Service]
+Type=simple
+User=postgres
+Group=postgres
+ExecStart=/bin/patroni /etc/patroni/patroni.yml
+ExecReload=/bin/kill -s HUP $MAINPID
+KillMode=process
+TimeoutSec=30
+Restart=always
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+```
+
+#### Bootstrap the cluster — start the primary FIRST
 
 ```bash
 # On db1 ONLY — this creates the data directory and makes db1 the leader
@@ -946,12 +1082,18 @@ patronictl -c /etc/patroni/patroni.yml list
 
 > 🧠 **Why primary first?** If you start a replica before any primary exists, Patroni would *also* try to bootstrap — two nodes racing to initdb is chaos. The leader lock in etcd prevents a real split-brain, but starting in order is clean and predictable.
 
+---
+
 ### Phase 4 — pgpool-II + Watchdog + VIP (db1, db2, db3)
 
-The full `pgpool.conf` is long — here is the **watchdog-relevant essence** (per node; the `pgpool_node_id` file differs: `0`, `1`, `2`):
+The full `pgpool.conf` is long — here is the **watchdog-relevant essence** (per node; the `pgpool_node_id` file differs: `0`, `1`, `2`).
+
+> 📋 **Config directory:**
+> - **RHEL/CentOS:** `/etc/pgpool-II`
+> - **Debian/Ubuntu:** `/etc/pgpool2`
 
 ```ini
-# /etc/pgpool-II/pgpool.conf  (db1 example — key lines)
+# pgpool.conf  (db1 example — key lines)
 listen_addresses = '*'
 port = 9999
 socket_dir = '/var/run/pgpool'
@@ -959,19 +1101,19 @@ socket_dir = '/var/run/pgpool'
 backend_hostname0 = '192.168.122.150'
 backend_port0 = 5432
 backend_weight0 = 1
-backend_data_directory0 = '/postgres/data/16/kyc'
+backend_data_directory0 = '/postgres/data/16/kyc'   # DEBIAN PATH — change for RHEL
 backend_flag0 = 'ALLOW_TO_FAILOVER'
 
 backend_hostname1 = '192.168.122.151'
 backend_port1 = 5432
 backend_weight1 = 1
-backend_data_directory1 = '/postgres/data/16/kyc'
+backend_data_directory1 = '/postgres/data/16/kyc'   # DEBIAN PATH — change for RHEL
 backend_flag1 = 'ALLOW_TO_FAILOVER'
 
 backend_hostname2 = '192.168.122.152'
 backend_port2 = 5432
 backend_weight2 = 1
-backend_data_directory2 = '/postgres/data/16/kyc'
+backend_data_directory2 = '/postgres/data/16/kyc'   # DEBIAN PATH — change for RHEL
 backend_flag2 = 'ALLOW_TO_FAILOVER'
 
 # Health checks
@@ -992,10 +1134,14 @@ pcp_port = 9898
 pcp_socket_dir = '/var/run/pgpool'
 ```
 
+> 📋 **Backend data_directory paths:**
+> - **RHEL/CentOS:** `/var/lib/pgsql/16/data/kyc`
+> - **Debian/Ubuntu:** `/postgres/data/16/kyc`
+
 And the watchdog section (must be **indexed** — `wd_port0/1/2` etc. — Pgpool 4.5+ rejects unindexed `wd_*` keys):
 
 ```ini
-# /etc/pgpool-II/pgpool_watchdog.conf (db1 example)
+# pgpool_watchdog.conf (db1 example)
 use_watchdog = on
 
 wd_hostname = '192.168.122.150'
@@ -1019,11 +1165,16 @@ vip_ip_up_cmd = '/etc/pgpool-II/vip-up.sh'
 vip_ip_down_cmd = '/etc/pgpool-II/vip-down.sh'
 ```
 
+> 📋 **Watchdog config dir and VIP script paths:**
+> - **RHEL/CentOS:** `/etc/pgpool-II/`
+> - **Debian/Ubuntu:** `/etc/pgpool2/`
+
 Per-node files:
 
 ```bash
 # db1 → 0, db2 → 1, db3 → 2
-echo -n "0" > /etc/pgpool-II/pgpool_node_id
+echo -n "0" > /etc/pgpool-II/pgpool_node_id    # RHEL path
+# echo -n "0" > /etc/pgpool2/pgpool_node_id    # Debian path
 
 # pgpool needs to raise the VIP → sudoers entry
 cat > /etc/sudoers.d/pgpool-vip <<'EOF'
@@ -1044,6 +1195,10 @@ echo "pgpool:CHANGE_ME_PGPOOL"   >> /etc/pgpool-II/pool_passwd
 chown pgpool:pgpool /etc/pgpool-II/pool_passwd /etc/pgpool-II/pcp.conf
 chmod 600 /etc/pgpool-II/pool_passwd /etc/pgpool-II/pcp.conf
 ```
+
+> 📋 **Config dir for these files:**
+> - **RHEL/CentOS:** `/etc/pgpool-II/`
+> - **Debian/Ubuntu:** `/etc/pgpool2/`
 
 Deploy the Patroni-aware failover scripts (simplified):
 
@@ -1071,7 +1226,11 @@ chown pgpool:pgpool /etc/pgpool-II/failover.sh /etc/pgpool-II/follow_master.sh
 Start pgpool on **all three nodes**:
 
 ```bash
+# RHEL/CentOS:
 systemctl enable --now pgpool
+
+# Debian/Ubuntu:
+systemctl enable --now pgpool2
 
 # Verify watchdog + VIP from any node
 pcp_watchdog_info -h localhost -p 9898 -U pgpool_pcp -w
@@ -1079,7 +1238,13 @@ pcp_watchdog_info -h localhost -p 9898 -U pgpool_pcp -w
 ip addr show eth0 | grep 192.168.122.200
 ```
 
+---
+
 ### Phase 5 — pgBackRest (backup node `.153` + PG nodes)
+
+> 📋 **Postgres user home:**
+> - **RHEL/CentOS:** `/var/lib/pgsql`
+> - **Debian/Ubuntu:** `/var/lib/postgresql`
 
 ```bash
 # On the backup node (.153)
@@ -1099,7 +1264,7 @@ repo1-retention-full = 2
 
 [kyc]
 pg1-host = 192.168.122.150
-pg1-path = /postgres/data/16/kyc
+pg1-path = /postgres/data/16/kyc      # DEBIAN PATH — change for RHEL
 pg1-port = 5432
 EOF
 
@@ -1110,9 +1275,15 @@ repo1-host = 192.168.122.153
 repo1-path = /postgres/pgbackup
 
 [kyc]
-pg1-path = /postgres/data/16/kyc
+pg1-path = /postgres/data/16/kyc      # DEBIAN PATH — change for RHEL
 EOF
+```
 
+> 📋 **pgBackRest `pg1-path` values:**
+> - **RHEL/CentOS:** `/var/lib/pgsql/16/data/kyc`
+> - **Debian/Ubuntu:** `/postgres/data/16/kyc`
+
+```bash
 # Create the stanza, then the first full backup (on the backup node)
 sudo -iu postgres pgbackrest --stanza=kyc stanza-create
 sudo -iu postgres pgbackrest --stanza=kyc --type=full backup
@@ -1121,7 +1292,11 @@ sudo -iu postgres pgbackrest --stanza=kyc info
 
 > The `archive_command` in Patroni (Phase 3) sends WAL to `/postgres/pgbackup/kyc/archive/` — pgBackRest picks it up from there. Archiving must be enabled **before** the first backup for a complete PITR chain.
 
+---
+
 ### Phase 6 — PMM (backup node `.153` + PG nodes)
+
+#### RHEL / CentOS / Stream 9
 
 ```bash
 # 1. On the backup node — run PMM Server as a Docker container
@@ -1150,8 +1325,38 @@ pmm-admin add postgresql --username=pg_pmm --password=CHANGE_ME \
 # 5. Browse to https://192.168.122.153:443 and watch the dashboards!
 ```
 
+#### Debian / Ubuntu
+
+```bash
+# 1. On the backup node — run PMM Server as a Docker container
+apt update && apt install -y docker.io
+systemctl enable --now docker
+
+# NOTE: the image listens on 8443 internally; map host 443 → container 8443
+docker run -d --name pmm-server --restart always \
+  -p 443:8443 -v pmm-data:/srv perconalab/pmm-server:3
+
+# Wait 2-3 minutes, then change the default admin password
+docker exec pmm-server change-admin-password YourNewPassword
+
+# 2. On each PG node — install PMM Client
+percona-release enable pmm3-client release
+apt update && apt install -y pmm3-client percona-pg-stat-monitor16
+
+# 3. Register each node with the server (retry until it succeeds)
+pmm-admin config --server-insecure-tls \
+  --server-url=https://admin:YourNewPassword@192.168.122.153:443 --force
+
+# 4. Add PostgreSQL monitoring (repeat on each node)
+pmm-admin add postgresql --username=pg_pmm --password=CHANGE_ME \
+  --service-name=db1-pg --host=localhost --port=5432
+
+# 5. Browse to https://192.168.122.153:443 and watch the dashboards!
+```
+
 > 🔥 If the PG nodes cannot reach `https://192.168.122.153:443`, open the firewall on the backup node:
-> `firewall-cmd --permanent --add-port=443/tcp && firewall-cmd --reload`
+> - **RHEL:** `firewall-cmd --permanent --add-port=443/tcp && firewall-cmd --reload`
+> - **Debian:** `ufw allow 443/tcp`
 > and add an iptables FORWARD rule for Docker if needed.
 
 ---
