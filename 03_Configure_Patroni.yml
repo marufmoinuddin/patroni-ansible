@@ -48,8 +48,6 @@
         pg_maintenance_work_mem_mb: "{{ 512 if ansible_memtotal_mb <= 4096 else (1024 if ansible_memtotal_mb <= 16384 else 2048) }}"
         # max_connections: web/oltp workload default
         pg_max_connections: "{{ [ 200, [ 100, (ansible_processor_cores | default(4) * 50) | int ] | max ] | min }}"
-        # wal_buffers: min(16MB, 3% of shared_buffers)
-        pg_wal_buffers_kb: "{{ [ 16384, (pg_shared_buffers_mb * 1024 * 0.03) | int ] | min }}"
         # WAL sizes
         pg_min_wal_size_mb: 1024
         pg_max_wal_size_mb: "{{ [ 4096, [ 1024, (ansible_memtotal_mb * 0.05) | int ] | max ] | min }}"
@@ -58,11 +56,13 @@
         pg_max_parallel_workers_per_gather: "{{ [ (ansible_processor_cores | default(4) // 2), 4 ] | min }}"
         pg_max_parallel_workers: "{{ [ ansible_processor_cores | default(4), 8 ] | min }}"
 
-    - name: Calculate work_mem (step 2 - needs pg_max_connections from step 1)
+    - name: Calculate derived parameters (step 2 - needs pg_max_connections, pg_shared_buffers_mb from step 1)
       set_fact:
         # work_mem: ensure total work_mem * max_connections * 2 < 25% RAM
         _work_mem_raw_kb: "{{ (ansible_memtotal_mb * 1024 * 0.25) / ( pg_max_connections * 2 ) | int }}"
         pg_work_mem_kb: "{{ [ 4096, [ _work_mem_raw_kb, 262144 ] | min ] | max }}"
+        # wal_buffers: min(16MB, 3% of shared_buffers)
+        pg_wal_buffers_kb: "{{ [ 16384, (pg_shared_buffers_mb * 1024 * 0.03) | int ] | min }}"
         # Storage-aware settings (assume SSD for cloud VMs)
         pg_random_page_cost: 1.1
         pg_effective_io_concurrency: 200
