@@ -108,6 +108,12 @@
       changed_when: false
       ignore_errors: true
 
+    - name: Remove stale PMM data volume (prevents internal PostgreSQL startup failure)
+      shell: |
+        docker volume rm pmm-data || true
+      changed_when: false
+      ignore_errors: true
+
     - name: Run PMM Server container
       shell: |
         docker run -d --name pmm-server --restart always -p 443:8443 -v pmm-data:/srv perconalab/pmm-server:{{ pmm_server_version }}
