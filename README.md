@@ -1,12 +1,14 @@
 # Patroni + PostgreSQL + pgpool-II High Availability Cluster
 ## A Complete Deployment and Operations Guide (Ansible + Manual)
 
-Welcome! This repository builds a **production-grade, 3-node high-availability PostgreSQL 16 cluster** on CentOS Stream 9 (RHEL-family) VMs using:
+Welcome! This repository builds a **production-grade, 3-node high-availability PostgreSQL 16 cluster** on **CentOS Stream 9 (RHEL-family) and Debian 12 Bookworm (Debian-family)** VMs using:
 
 - **Percona Distribution for PostgreSQL 16** — the database engine
 - **Patroni** — the "brain" that watches the cluster and fails over automatically
 - **etcd** — the distributed consensus store that holds the leader lock
-- **pgpool-II 4.5 + Watchdog** — the "traffic controller" that gives applications one Virtual IP (VIP)
+- **pgpool-II + Watchdog** — the "traffic controller" that gives applications one Virtual IP (VIP)
+  - **CentOS/RHEL:** pgpool-II 4.7 (Percona package, config in `/etc/pgpool-II`, separate `pgpool_watchdog.conf`)
+  - **Debian/Ubuntu:** native `pgpool2` 4.3.5 (Debian repo, config in `/etc/pgpool2`, watchdog params inline in `pgpool.conf`)
 - **pgBackRest** — backup & point-in-time recovery
 - **PMM (Percona Monitoring & Management)** — dashboards and alerts
 
@@ -62,7 +64,7 @@ Generate these **before** you start — you will paste them into several config 
 
 ### A Note on Hosts
 
-All examples use **db1/db2/db3** with IPs `192.168.122.150–152`, a backup node at `.153`, and the Virtual IP `192.168.122.200`, on **CentOS Stream 9 / RHEL-family** with `dnf`. The concepts and steps are identical on Debian/Ubuntu — only the package manager differs (`apt` instead of `dnf`).
+All examples use **db1/db2/db3** with IPs `192.168.122.150–152`, a backup node at `.153`, and the Virtual IP `192.168.122.200`. The concepts and steps are identical on **CentOS Stream 9 / RHEL-family** (with `dnf`) **and Debian 12 Bookworm / Ubuntu** (with `apt`). The only differences are the package manager, package names, config paths, and service names — all documented in a **dual-distro reference table** in the manual deployment section and handled automatically by the Ansible playbooks via `ansible_os_family` conditionals.
 
 ### What Problem Does Patroni Solve?
 
@@ -572,12 +574,12 @@ patroni-ansible/
 
 | # | Playbook | What It Does (Plain English) |
 |---|----------|------------------------------|
-| 01 | `01_Install_Percona.yml` | Adds the Percona repository, enables EPEL + CRB, installs PostgreSQL 16, Patroni, etcd, pgpool-II, pgBackRest, jq — and **purges any old/broken installs** so you start clean |
-| 02 | `02_Configure_Etcd.yml` | Writes the etcd config on all 3 nodes, **wipes stale etcd data** (so a re-run bootstraps cleanly), starts etcd, and verifies quorum |
-| 03 | `03_Configure_Patroni.yml` | Creates the PostgreSQL data directory, writes `patroni.yml` (the full HA config), installs the systemd unit, **starts the primary first**, waits, then starts replicas — then verifies with `patronictl list` |
-| 04 | `04_Configure_Pgpool.yml` | Writes `pgpool.conf` + `pgpool_watchdog.conf` + `pool_hba.conf` + `pool_passwd` + `pcp.conf`, deploys Patroni-aware `failover.sh` / `follow_master.sh`, sets `pgpool_node_id`, and starts the watchdog cluster so the VIP is claimed |
-| 05 | `05_Configure_Pgbackrest.yml` | Installs/connects pgBackRest on the backup node, exchanges SSH keys with all PG nodes, writes `pgbackrest.conf` with stanza `kyc`, and prints the exact commands to create the stanza + first backup |
-| 06 | `06_Install_Pmm_Monitoring.yml` | Pulls and runs the PMM Server Docker container on the backup node, opens the firewall for it, installs PMM Client + `pg_stat_monitor` on all 3 PG nodes, and registers them with the server |
+| 01 | `01_Install_Percona.yml` | Adds the Percona repository, enables EPEL + CRB (RHEL), installs PostgreSQL 16, Patroni, etcd, pgpool-II, pgBackRest, jq — and **purges any old/broken installs** so you start clean. On **Debian**: installs native `pgpool2` **BEFORE** enabling Percona repo, then pins `libpgpool2=4.3.5*` to prevent version conflicts with Percona's PostgreSQL 16 modules. |
+| 02 | `02_Configure_Etcd.yml` | Writes the etcd config on all 3 nodes, **wipes stale etcd data** (so a re-run bootstraps cleanly), starts etcd, and verifies quorum. |
+| 03 | `03_Configure_Patroni.yml` | Creates the PostgreSQL data directory, writes `patroni.yml` (the full HA config), installs the systemd unit, **starts the primary first**, waits, then starts replicas — then verifies with `patronictl list`. |
+| 04 | `04_Configure_Pgpool.yml` | Writes `pgpool.conf` + **OS-conditional watchdog config** (CentOS: separate `pgpool_watchdog.conf` with 4.7 params; Debian: inline in `pgpool.conf` with legacy 4.3.5 params), `pool_hba.conf` + `pool_passwd` + `pcp.conf`, deploys Patroni-aware `failover.sh` / `follow_master.sh`, sets `pgpool_node_id`, and starts the watchdog cluster so the VIP is claimed. **Auto-detects VIP interface** (`eth0` on CentOS, `enp3s0` on Debian). |
+| 05 | `05_Configure_Pgbackrest.yml` | Installs/connects pgBackRest on the backup node, exchanges SSH keys with all PG nodes (using `StrictHostKeyChecking accept-new` for non-interactive automation), writes `pgbackrest.conf` with stanza `kyc`, and prints the exact commands to create the stanza + first backup. |
+| 06 | `06_Install_Pmm_Monitoring.yml` | Pulls and runs the PMM Server Docker container on the backup node (cleans stale `pmm-data` volume first), opens the firewall for it, installs PMM Client on all 3 PG nodes (skips `pg_stat_monitor` on Debian where the package doesn't exist), and registers them with the server. |
 
 ### Default Values You Should Know
 
@@ -755,16 +757,17 @@ Prefer to see every screw and bolt? This section walks through exactly what the 
 
 **Pick your distro family** — commands differ only in package management and a few paths. The logic (etcd → Patroni → pgpool → pgBackRest → PMM) is identical.
 
-| Area | RHEL / CentOS / Stream 9 | Debian / Ubuntu (22.04, 24.04) |
-|------|-------------------------|--------------------------------|
+| Area | RHEL / CentOS / Stream 9 | Debian / Ubuntu (12, 22.04, 24.04) |
+|------|-------------------------|-----------------------------------|
 | Package manager | `dnf` | `apt` (with `apt update`) |
 | Percona repo | RPM + `percona-release setup ppg-16` | `.deb` + `percona-release setup ppg-16` |
 | PostgreSQL data dir | `/var/lib/pgsql/16/data/kyc` | `/postgres/data/16/kyc` |
 | PostgreSQL bin dir | `/usr/pgsql-16/bin` | `/usr/lib/postgresql/16/bin` |
 | PostgreSQL service | `postgresql-16` (systemd) | `postgresql` (via `pg_ctlcluster`) |
 | Patroni binary | `/usr/bin/patroni` | `/bin/patroni` |
-| Pgpool config dir | `/etc/pgpool-II` | `/etc/pgpool2` |
-| Pgpool service name | `pgpool` | `pgpool2` |
+| **Pgpool config dir** | `/etc/pgpool-II` | `/etc/pgpool2` |
+| **Pgpool service name** | `pgpool` | `pgpool2` |
+| **Pgpool package** | `percona-pgpool-II-pg16` (4.7) | **native `pgpool2` (4.3.5)** — NOT `postgresql-16-pgpool2` |
 | Postgres user home | `/var/lib/pgsql` | `/var/lib/postgresql` |
 
 ---
@@ -842,13 +845,29 @@ apt install -y ./percona-release_latest.generic_all.deb
 # 3. Enable the PostgreSQL 16 Percona repository
 percona-release setup ppg-16
 
-# 4. Install everything
-apt update && apt install -y \
+# 4. Install native pgpool2 FIRST (from Debian repo) to avoid Percona libpgpool2 conflict
+#    Then pin libpgpool2 to 4.3.5* so Percona's 4.7.0 doesn't upgrade it
+apt update
+apt install -y pgpool2 libpgpool2=4.3.5-1+deb12u1
+# Pin the version (write before any Percona install)
+cat > /etc/apt/preferences.d/pgpool2 <<'EOF'
+Package: pgpool2
+Pin: version 4.3.5*
+Pin-Priority: 1001
+
+Package: libpgpool2
+Pin: version 4.3.5*
+Pin-Priority: 1001
+EOF
+
+# 5. Install the rest from Percona
+apt install -y \
   percona-postgresql-16 \
   percona-patroni etcd \
-  postgresql-16-pgpool2 \
   percona-pgbackrest
 ```
+
+> ⚠️ **Critical Debian pgpool2 note:** The Percona package `postgresql-16-pgpool2` is a **PostgreSQL 16 extension module only** (no pgpool daemon, no systemd unit, no `/etc/pgpool2` config dir). It also installs `libpgpool2=4.7.0` which **hard-conflicts** with native `pgpool2` 4.3.5's `libpgpool2=4.3.5`. **Use native `pgpool2` only** — do not install `postgresql-16-pgpool2`.
 
 ---
 
@@ -1113,9 +1132,11 @@ patronictl -c /etc/patroni/patroni.yml list
 
 The full `pgpool.conf` is long — here is the **watchdog-relevant essence** (per node; the `pgpool_node_id` file differs: `0`, `1`, `2`).
 
-> 📋 **Config directory:**
-> - **RHEL/CentOS:** `/etc/pgpool-II`
-> - **Debian/Ubuntu:** `/etc/pgpool2`
+> 📋 **Config directory and package version differences:**
+> - **RHEL/CentOS:** `/etc/pgpool-II`, pgpool-II 4.7 (Percona package), watchdog in **separate `pgpool_watchdog.conf`**
+> - **Debian/Ubuntu:** `/etc/pgpool2`, native `pgpool2` 4.3.5 (Debian repo), watchdog **inline in `pgpool.conf`** with legacy parameter names
+
+#### RHEL/CentOS (pgpool-II 4.7) — Separate Watchdog Config
 
 ```ini
 # pgpool.conf  (db1 example — key lines)
@@ -1126,19 +1147,19 @@ socket_dir = '/var/run/pgpool'
 backend_hostname0 = '192.168.122.150'
 backend_port0 = 5432
 backend_weight0 = 1
-backend_data_directory0 = '/postgres/data/16/kyc'   # DEBIAN PATH — change for RHEL
+backend_data_directory0 = '/var/lib/pgsql/16/data/kyc'   # RHEL PATH
 backend_flag0 = 'ALLOW_TO_FAILOVER'
 
 backend_hostname1 = '192.168.122.151'
 backend_port1 = 5432
 backend_weight1 = 1
-backend_data_directory1 = '/postgres/data/16/kyc'   # DEBIAN PATH — change for RHEL
+backend_data_directory1 = '/var/lib/pgsql/16/data/kyc'   # RHEL PATH
 backend_flag1 = 'ALLOW_TO_FAILOVER'
 
 backend_hostname2 = '192.168.122.152'
 backend_port2 = 5432
 backend_weight2 = 1
-backend_data_directory2 = '/postgres/data/16/kyc'   # DEBIAN PATH — change for RHEL
+backend_data_directory2 = '/var/lib/pgsql/16/data/kyc'   # RHEL PATH
 backend_flag2 = 'ALLOW_TO_FAILOVER'
 
 # Health checks
@@ -1159,11 +1180,7 @@ pcp_port = 9898
 pcp_socket_dir = '/var/run/pgpool'
 ```
 
-> 📋 **Backend data_directory paths:**
-> - **RHEL/CentOS:** `/var/lib/pgsql/16/data/kyc`
-> - **Debian/Ubuntu:** `/postgres/data/16/kyc`
-
-And the watchdog section (must be **indexed** — `wd_port0/1/2` etc. — Pgpool 4.5+ rejects unindexed `wd_*` keys):
+And the watchdog section in **separate `pgpool_watchdog.conf`** (4.7 parameter names):
 
 ```ini
 # pgpool_watchdog.conf (db1 example)
@@ -1171,8 +1188,10 @@ use_watchdog = on
 
 wd_hostname = '192.168.122.150'
 wd_port = 9000
+wd_priority = 1
+wd_authkey = 'CHANGE_ME_WD_AUTH'
 
-# Watchdog peers — IMPORTANT: list ALL nodes on every node
+# Watchdog peers — IMPORTANT: list ALL nodes on every node (4.7 requires indexed params)
 wd_hostname0 = '192.168.122.150'
 wd_port0 = 9000
 wd_hostname1 = '192.168.122.151'
@@ -1180,21 +1199,112 @@ wd_port1 = 9000
 wd_hostname2 = '192.168.122.152'
 wd_port2 = 9000
 
+# Heartbeat (4.7 names: heartbeat_hostname, heartbeat_port, heartbeat_device)
+heartbeat_destination0 = '192.168.122.151'
+heartbeat_port0 = 9694
+heartbeat_device0 = 'eth0'
+heartbeat_destination1 = '192.168.122.152'
+heartbeat_port1 = 9694
+heartbeat_device1 = 'eth0'
+
 # Virtual IP — only active on the watchdog leader
 vip = 1
 vip_ip = '192.168.122.200'
 vip_ifconfig = 'ifconfig eth0:0 192.168.122.200/24'
 vip_arping = 'arping -U -I eth0 -c 3 192.168.122.200'
 vip_cidr_prefix_length = 24
-vip_ip_up_cmd = '/etc/pgpool-II/vip-up.sh'
-vip_ip_down_cmd = '/etc/pgpool-II/vip-down.sh'
+delegate_ip = '192.168.122.200'
 ```
 
-> 📋 **Watchdog config dir and VIP script paths:**
-> - **RHEL/CentOS:** `/etc/pgpool-II/`
-> - **Debian/Ubuntu:** `/etc/pgpool2/`
+#### Debian/Ubuntu (pgpool2 4.3.5) — Inline Watchdog Config
 
-Per-node files:
+```ini
+# pgpool.conf  (db1 example — key lines, watchdog INLINE)
+listen_addresses = '*'
+port = 9999
+socket_dir = '/var/run/pgpool'
+
+backend_hostname0 = '192.168.122.150'
+backend_port0 = 5432
+backend_weight0 = 1
+backend_data_directory0 = '/postgres/data/16/kyc'   # DEBIAN PATH
+backend_flag0 = 'ALLOW_TO_FAILOVER'
+
+backend_hostname1 = '192.168.122.151'
+backend_port1 = 5432
+backend_weight1 = 1
+backend_data_directory1 = '/postgres/data/16/kyc'   # DEBIAN PATH
+backend_flag1 = 'ALLOW_TO_FAILOVER'
+
+backend_hostname2 = '192.168.122.152'
+backend_port2 = 5432
+backend_weight2 = 1
+backend_data_directory2 = '/postgres/data/16/kyc'   # DEBIAN PATH
+backend_flag2 = 'ALLOW_TO_FAILOVER'
+
+# Health checks
+health_check_period = 10
+health_check_timeout = 20
+health_check_user = 'pgpool'
+health_check_password = 'CHANGE_ME_HEALTH'
+
+# Streaming replication check
+sr_check_period = 10
+sr_check_user = 'pgpool'
+sr_check_password = 'CHANGE_ME_HEALTH'
+delay_threshold = 1048576
+
+# PCP
+pcp_listen_addresses = '*'
+pcp_port = 9898
+pcp_socket_dir = '/var/run/pgpool'
+
+# Watchdog (INLINE in pgpool.conf — 4.3.5 legacy parameter names)
+use_watchdog = on
+wd_lifecheck_method = 'heartbeat'
+
+wd_hostname = '192.168.122.150'
+wd_port = 9000
+wd_priority0 = 1
+wd_authkey0 = 'CHANGE_ME_WD_AUTH'
+
+# Watchdog peers (indexed: 0,1,2 — must list ALL nodes)
+wd_hostname0 = '192.168.122.150'
+wd_port0 = 9000
+wd_hostname1 = '192.168.122.151'
+wd_port1 = 9000
+wd_hostname2 = '192.168.122.152'
+wd_port2 = 9000
+
+# Heartbeat (4.3.5 legacy names: heartbeat_destination, heartbeat_destination_port, heartbeat_interface)
+heartbeat_destination0 = '192.168.122.151'
+heartbeat_destination_port0 = 9694
+heartbeat_interface0 = 'enp3s0'
+heartbeat_destination1 = '192.168.122.152'
+heartbeat_destination_port1 = 9694
+heartbeat_interface1 = 'enp3s0'
+
+# Virtual IP
+vip = 1
+vip_ip = '192.168.122.200'
+vip_ifconfig = 'ifconfig enp3s0:0 192.168.122.200/24'
+vip_arping = 'arping -U -I enp3s0 -c 3 192.168.122.200'
+vip_cidr_prefix_length = 24
+delegate_IP = '192.168.122.200'
+```
+
+> 🔑 **Key 4.3.5 vs 4.7 parameter differences:**
+> | 4.7 (CentOS, separate file) | 4.3.5 (Debian, inline) |
+> |-----------------------------|------------------------|
+> | `heartbeat_hostnameN` | `heartbeat_destinationN` |
+> | `heartbeat_portN` | `heartbeat_destination_portN` |
+> | `heartbeat_deviceN` | `heartbeat_interfaceN` |
+> | `wd_priority` (unindexed) | `wd_priority0` (indexed) |
+> | `wd_authkey` (unindexed) | `wd_authkey0` (indexed) |
+> | `delegate_ip` | `delegate_IP` (uppercase) |
+> | `pgpool_watchdog.conf` | inline in `pgpool.conf` |
+
+Per-node files (identical on both distros except config dir):
 
 ```bash
 # db1 → 0, db2 → 1, db3 → 2
@@ -1207,6 +1317,10 @@ pgpool ALL=(root) NOPASSWD: /sbin/ip, /usr/sbin/arping
 EOF
 chmod 440 /etc/sudoers.d/pgpool-vip
 ```
+
+> 📋 **Config dir for these files:**
+> - **RHEL/CentOS:** `/etc/pgpool-II/`
+> - **Debian/Ubuntu:** `/etc/pgpool2/`
 
 Create the PCP passfile and pool password file:
 
@@ -1260,7 +1374,8 @@ systemctl enable --now pgpool2
 # Verify watchdog + VIP from any node
 pcp_watchdog_info -h localhost -p 9898 -U pgpool_pcp -w
 # One node is "LEADER" and owns 192.168.122.200
-ip addr show eth0 | grep 192.168.122.200
+ip addr show eth0 | grep 192.168.122.200    # RHEL (or your NIC)
+# ip addr show enp3s0 | grep 192.168.122.200  # Debian (predictable NIC name)
 ```
 
 ---
@@ -1366,7 +1481,8 @@ docker exec pmm-server change-admin-password YourNewPassword
 
 # 2. On each PG node — install PMM Client
 percona-release enable pmm3-client release
-apt update && apt install -y pmm3-client percona-pg-stat-monitor16
+apt update && apt install -y pmm3-client
+# Note: percona-pg-stat-monitor16 is NOT available on Debian/Ubuntu — skip it
 
 # 3. Register each node with the server (retry until it succeeds)
 pmm-admin config --server-insecure-tls \
