@@ -1,0 +1,35 @@
+# Ansible
+*.retry
+.vault_pass
+
+# Credentials - NEVER commit this file!
+credentials.yaml
+!credentials.yaml.example
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+/tmp/deploy-*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+
+# SSH keys (generated during deployment)
+*.pem
+*.key
+*.pub

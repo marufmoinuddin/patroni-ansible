@@ -652,16 +652,37 @@ ssh-copy-id root@192.168.122.153
 
 ### Step 3 — Adjust Variables (Important!)
 
-These are the values you most likely need to change:
+All secrets are now managed in a separate **`credentials.yaml`** file (not committed to git). This allows you to encrypt it with `ansible-vault` and keep passwords out of playbooks.
 
-| Where | What | Why |
-|-------|------|-----|
-| `hosts` | IP addresses | Your VMs |
-| `04_Configure_Pgpool.yml` | `vip_interface: "eth0"` | Your NIC name (`ip link` to check) |
-| `03_Configure_Patroni.yml` | `scope`, passwords | Your cluster name + **real passwords** |
-| `04_Configure_Pgpool.yml` | pgpool/pcp/health passwords | **Real passwords** |
-| `05_Configure_Pgbackrest.yml` | `stanza`, repo path | Your backup naming |
-| `06_Install_Pmm_Monitoring.yml` | `pmm_admin_password` | Your monitoring password |
+**Quick start:**
+```bash
+# 1. Copy the example and edit with your real values
+cp credentials.yaml.example credentials.yaml
+vim credentials.yaml
+
+# 2. (Recommended) Encrypt it with ansible-vault
+ansible-vault encrypt credentials.yaml
+
+# 3. Edit later with: ansible-vault edit credentials.yaml
+```
+
+**These are the values you most likely need to change in `credentials.yaml`:**
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `patroni_scope` | Cluster name | `kyc` |
+| `postgres_password` | PostgreSQL superuser password | **strong random** |
+| `replicator_password` | Replication user password | **strong random** |
+| `patroni_admin_password` | Patroni REST API admin | **strong random** |
+| `percona_password` | Percona monitoring user | **strong random** |
+| `pgpool_password` | pgpool monitoring user | **strong random** |
+| `pcp_password` | Pgpool PCP admin user | **strong random** |
+| `pmm_admin_password` | PMM web UI admin | **strong random** |
+| `pg_pmm_user_password` | PMM PostgreSQL monitor user | **strong random** |
+| `vip_address` | Floating Virtual IP | `192.168.122.200` |
+| `vip_interface` | NIC for VIP (check `ip link`) | `eth0` |
+
+> ⚠️ **Never commit `credentials.yaml` to git** — it's in `.gitignore`. Only commit `credentials.yaml.example`.
 
 ### Step 4 — Run the Deployment
 
@@ -670,6 +691,10 @@ These are the values you most likely need to change:
 ansible-playbook -i hosts site.yml --syntax-check
 
 # Run everything (this takes ~10-15 minutes)
+# If you encrypted credentials.yaml with ansible-vault:
+ansible-playbook -i hosts site.yml --ask-vault-pass
+
+# If you did NOT encrypt (not recommended for production):
 ansible-playbook -i hosts site.yml
 ```
 
@@ -1548,20 +1573,24 @@ patronictl -c /etc/patroni/patroni.yml list
 
 ## 13. Security Notes — Change These Before Production
 
-⚠️ **This repository ships with default example passwords so novices can deploy immediately. Change ALL of them before production use:**
+⚠️ **All secrets are now managed in `credentials.yaml` (not in playbooks).** The repository ships with `credentials.yaml.example` containing placeholder values. **Copy it to `credentials.yaml`, fill in your real passwords, and encrypt with `ansible-vault` before production use:**
 
-| Where | Default | Change To |
-|-------|---------|-----------|
-| `03_Configure_Patroni.yml` | `postgres` password `qaz123` | Strong unique password |
-| `03_Configure_Patroni.yml` | `replicator` password `replPasswd` | Strong unique password |
-| `03_Configure_Patroni.yml` | `admin`, `percona`, `pgpool` users `qaz123` / `pgpool_pass` | Strong unique passwords |
-| `04_Configure_Pgpool.yml` | `pgpool_admin_password`, `pcp_password`, `health_check_password` | Strong unique passwords |
-| `06_Install_Pmm_Monitoring.yml` | `pmm_admin_password` | Strong unique password |
+| Variable in `credentials.yaml` | Purpose | Production Value |
+|-------------------------------|---------|------------------|
+| `postgres_password` | PostgreSQL superuser | **Strong random** |
+| `replicator_password` | Streaming replication user | **Strong random** |
+| `patroni_admin_password` | Patroni REST API admin | **Strong random** |
+| `percona_password` | Percona monitoring user | **Strong random** |
+| `pgpool_password` | pgpool monitoring user | **Strong random** |
+| `pcp_password` | Pgpool PCP admin | **Strong random** |
+| `pmm_admin_password` | PMM web UI admin | **Strong random** |
+| `pg_pmm_user_password` | PMM PostgreSQL monitor user | **Strong random** |
 | SSH (pgBackRest) | auto-generated keys | Already unique per deployment — store securely |
 
 **Best practices:**
 
-- Use **Ansible Vault** for secrets: `ansible-vault encrypt_string 'MySecret' --name patroni_postgres_password`, then reference `{{ patroni_postgres_password }}` in the playbooks
+- Use **Ansible Vault** for the entire `credentials.yaml`: `ansible-vault encrypt credentials.yaml` — then run playbooks with `--ask-vault-pass`
+- **Never commit `credentials.yaml` to git** — it's in `.gitignore`. Only `credentials.yaml.example` is committed.
 - Restrict firewall rules to the **cluster subnet** only
 - Never expose etcd (:2379/2380), Patroni REST (:8008), or PostgreSQL (:5432) to the public internet — only the pgpool VIP (:9999) and PMM (:443) should be reachable by application/admin networks
 - Put the `pgpass` file somewhere private with `0600` permissions (the playbook uses `/tmp/pgpass0` for bootstrap simplicity — move it after first boot if you prefer)
