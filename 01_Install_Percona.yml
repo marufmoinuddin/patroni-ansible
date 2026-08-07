@@ -97,10 +97,10 @@
       ignore_errors: true
       when: ansible_os_family == "RedHat"
 
-    - name: Remove Pgpool packages (Debian/Ubuntu)
+    - name: Purge Pgpool packages (Debian/Ubuntu)
       ansible.builtin.apt:
         name:
-          - percona-pgpool16
+          - pgpool2
           - postgresql-16-pgpool2
         state: absent
         purge: yes
@@ -297,7 +297,7 @@
     - name: Install Pgpool-II (Debian/Ubuntu)
       ansible.builtin.apt:
         name:
-          - percona-pgpool16
+          - pgpool2
           - postgresql-16-pgpool2
         state: present
       when: ansible_os_family == "Debian"
