@@ -83,26 +83,45 @@
     # ============================================================
     # NOTE: psql is NOT on PATH for the postgres user on a clean RHEL install.
     # Use the absolute path (RHEL: /usr/pgsql-16/bin/psql, Debian: /usr/bin/psql).
-    - name: Create Pgpool users in PostgreSQL (on primary only)
+    # We must target the *current* Patroni leader (which may not be db1 after failover).
+    - name: Discover current Patroni leader via REST API
+      uri:
+        url: "http://{{ item }}:8008/patroni"
+        method: GET
+        timeout: 5
+      loop: "{{ groups['pg_nodes'] }}"
+      register: patroni_cluster
+      failed_when: false
+      changed_when: false
+      run_once: true
+      delegate_to: "{{ groups['pg_nodes'][0] }}"
+
+    - name: Set leader_fact from Patroni REST
+      set_fact:
+        patroni_leader: "{{ patroni_cluster.results | selectattr('json.role', 'equalto', 'Leader') | map(attribute='item') | first }}"
+        patroni_leader_ip: "{{ patroni_cluster.results | selectattr('json.role', 'equalto', 'Leader') | map(attribute='item') | first }}"
+      run_once: true
+
+    - name: Create Pgpool users in PostgreSQL (on current primary only)
       block:
         - name: Create pgpool_admin user
           shell: |
             su - postgres -c "{{ psql_path }} -c \"CREATE USER {{ pgpool_admin_user }} WITH SUPERUSER PASSWORD '{{ pgpool_admin_password }}';\" || {{ psql_path }} -c \"ALTER USER {{ pgpool_admin_user }} WITH SUPERUSER PASSWORD '{{ pgpool_admin_password }}';\""
-          delegate_to: "{{ groups['pg_nodes'][0] }}"
+          delegate_to: "{{ patroni_leader }}"
           run_once: true
           ignore_errors: true
 
         - name: Create pcp user (for PCP commands)
           shell: |
             su - postgres -c "{{ psql_path }} -c \"CREATE USER {{ pcp_user }} WITH SUPERUSER PASSWORD '{{ pcp_password }}';\" || {{ psql_path }} -c \"ALTER USER {{ pcp_user }} WITH SUPERUSER PASSWORD '{{ pcp_password }}';\""
-          delegate_to: "{{ groups['pg_nodes'][0] }}"
+          delegate_to: "{{ patroni_leader }}"
           run_once: true
           ignore_errors: true
 
         - name: Create health check user (pgpool)
           shell: |
             su - postgres -c "{{ psql_path }} -c \"CREATE USER {{ health_check_user }} WITH PASSWORD '{{ health_check_password }}';\" || {{ psql_path }} -c \"ALTER USER {{ health_check_user }} WITH PASSWORD '{{ health_check_password }}';\""
-          delegate_to: "{{ groups['pg_nodes'][0] }}"
+          delegate_to: "{{ patroni_leader }}"
           run_once: true
           ignore_errors: true
       when: is_first_node
