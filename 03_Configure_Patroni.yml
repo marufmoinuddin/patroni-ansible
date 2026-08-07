@@ -58,9 +58,8 @@
 
     - name: Calculate derived parameters (step 2 - needs pg_max_connections, pg_shared_buffers_mb from step 1)
       set_fact:
-        # work_mem: ensure total work_mem * max_connections * 2 < 25% RAM
+        # work_mem intermediate calculation
         _work_mem_raw_kb: "{{ (ansible_memtotal_mb * 1024 * 0.25) / ( pg_max_connections * 2 ) | int }}"
-        pg_work_mem_kb: "{{ [ 4096, [ _work_mem_raw_kb, 262144 ] | min ] | max }}"
         # wal_buffers: min(16MB, 3% of shared_buffers)
         pg_wal_buffers_kb: "{{ [ 16384, (pg_shared_buffers_mb * 1024 * 0.03) | int ] | min }}"
         # Storage-aware settings (assume SSD for cloud VMs)
@@ -70,6 +69,11 @@
         pg_checkpoint_completion_target: 0.9
         # JIT (PG 11+)
         pg_jit: "{{ 'on' if (ansible_processor_cores | default(4)) >= 4 else 'off' }}"
+
+    - name: Calculate work_mem (step 3 - needs _work_mem_raw_kb from step 2)
+      set_fact:
+        # work_mem: ensure total work_mem * max_connections * 2 < 25% RAM
+        pg_work_mem_kb: "{{ [ 4096, [ _work_mem_raw_kb, 262144 ] | min ] | max }}"
 
     - name: Display calculated PostgreSQL parameters
       debug:
