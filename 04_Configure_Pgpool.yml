@@ -84,22 +84,32 @@
     # NOTE: psql is NOT on PATH for the postgres user on a clean RHEL install.
     # Use the absolute path (RHEL: /usr/pgsql-16/bin/psql, Debian: /usr/bin/psql).
     # We must target the *current* Patroni leader (which may not be db1 after failover).
-    - name: Discover current Patroni leader via REST API
-      uri:
-        url: "http://{{ item }}:8008/patroni"
-        method: GET
-        timeout: 5
-        return_content: yes
-      loop: "{{ groups['pg_nodes'] }}"
-      register: patroni_cluster
-      failed_when: false
+    - name: Discover current Patroni leader via REST API (curl)
+      shell: |
+        for ip in {{ groups['pg_nodes'] | join(' ') }}; do
+          role=$(curl -s --connect-timeout 3 http://$ip:8008/patroni 2>/dev/null | python3 -c "import sys, json; print(json.load(sys.stdin)['role'])" 2>/dev/null)
+          if [ "$role" = "primary" ]; then
+            echo "$ip"
+            exit 0
+          fi
+        done
+        exit 1
+      register: patroni_leader_result
       changed_when: false
+      failed_when: false
       run_once: true
       delegate_to: "{{ groups['pg_nodes'][0] }}"
 
-    - name: Set leader_fact from Patroni REST
+    - name: Set patroni_leader fact
       set_fact:
-        patroni_leader: "{{ patroni_cluster.results | selectattr('content', 'defined') | map(attribute='content') | map('from_json') | selectattr('role', 'equalto', 'primary') | map(attribute='item') | first }}"
+        patroni_leader: "{{ patroni_leader_result.stdout }}"
+      run_once: true
+      when: patroni_leader_result.rc == 0
+
+    - name: Fail if no leader found
+      fail:
+        msg: "Could not discover Patroni leader via REST API"
+      when: patroni_leader_result.rc != 0
       run_once: true
 
     - name: Create Pgpool users in PostgreSQL (on current primary only)
