@@ -297,7 +297,6 @@
     - name: Install Pgpool-II (Debian/Ubuntu)
       ansible.builtin.apt:
         name:
-          - pgpool2
           - postgresql-16-pgpool2
         state: present
       when: ansible_os_family == "Debian"
