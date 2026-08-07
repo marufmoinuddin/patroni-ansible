@@ -77,6 +77,15 @@
         group: postgres
         mode: '0755'
 
+    - name: Ensure Pgpool config directory exists (Debian)
+      file:
+        path: "{{ pgpool_conf_dir }}"
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: '0755'
+      when: ansible_os_family == "Debian"
+
     # ============================================================
     # 2. CREATE PGROOL USERS IN POSTGRESQL (ON PRIMARY)
     # ============================================================
