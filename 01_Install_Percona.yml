@@ -298,6 +298,21 @@
         state: present
         update_cache: yes
       when: ansible_os_family == "Debian"
+      register: pgpool_install
+      until: pgpool_install is succeeded
+      retries: 3
+      delay: 10
+
+    - name: Pin native pgpool2 to avoid Percona repo conflicts (Debian)
+      ansible.builtin.copy:
+        dest: /etc/apt/preferences.d/pgpool2
+        content: |
+          Package: pgpool2 libpgpool2
+          Pin: release o=Debian
+          Pin-Priority: 1001
+        mode: '0644'
+      when: ansible_os_family == "Debian"
+      changed_when: false
 
     - name: Install Pgpool-II (RHEL/CentOS)
       ansible.builtin.dnf:
