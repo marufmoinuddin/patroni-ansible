@@ -62,6 +62,25 @@
         - etcd
       ignore_errors: true
 
+    - name: Remove percona-release package and repo sources (Debian/Ubuntu)
+      ansible.builtin.apt:
+        name:
+          - percona-release
+        state: absent
+        purge: yes
+      ignore_errors: true
+      when: ansible_os_family == "Debian"
+
+    - name: Remove percona-release source list files (Debian/Ubuntu)
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/apt/sources.list.d/percona-release.list
+        - /etc/apt/sources.list.d/percona-release.list.save
+      ignore_errors: true
+      when: ansible_os_family == "Debian"
+
     - name: Purge Patroni and PostgreSQL packages (Debian/Ubuntu)
       ansible.builtin.apt:
         name:
@@ -184,6 +203,17 @@
     # IMPORTANT: Install native pgpool2 BEFORE adding the Percona repo.
     # Percona's libpgpool2 (4.7.x) conflicts with native pgpool2's pin on
     # libpgpool2 (= 4.3.5). Installing first + pinning avoids "held broken packages".
+    - name: Pin native pgpool2 to avoid Percona repo conflicts (Debian)
+      ansible.builtin.copy:
+        dest: /etc/apt/preferences.d/pgpool2
+        content: |
+          Package: pgpool2 libpgpool2
+          Pin: version 4.3.5*
+          Pin-Priority: 1001
+        mode: '0644'
+      when: ansible_os_family == "Debian"
+      changed_when: false
+
     - name: Install Pgpool-II daemon FIRST (before Percona repo) - Debian
       ansible.builtin.apt:
         name:
@@ -195,17 +225,6 @@
       until: pgpool_install is succeeded
       retries: 3
       delay: 10
-
-    - name: Pin native pgpool2 to avoid Percona repo conflicts (Debian)
-      ansible.builtin.copy:
-        dest: /etc/apt/preferences.d/pgpool2
-        content: |
-          Package: pgpool2 libpgpool2
-          Pin: release o=Debian
-          Pin-Priority: 1001
-        mode: '0644'
-      when: ansible_os_family == "Debian"
-      changed_when: false
 
     - name: Install curl and wget (RHEL/CentOS)
       ansible.builtin.dnf:
