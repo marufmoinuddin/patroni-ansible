@@ -99,8 +99,7 @@
 
     - name: Set leader_fact from Patroni REST
       set_fact:
-        patroni_leader: "{{ patroni_cluster.results | selectattr('json.role', 'equalto', 'Leader') | map(attribute='item') | first }}"
-        patroni_leader_ip: "{{ patroni_cluster.results | selectattr('json.role', 'equalto', 'Leader') | map(attribute='item') | first }}"
+        patroni_leader: "{{ patroni_cluster.results | selectattr('content', 'defined') | map(attribute='content') | map('from_json') | selectattr('role', 'equalto', 'Leader') | map(attribute='item') | first }}"
       run_once: true
 
     - name: Create Pgpool users in PostgreSQL (on current primary only)
