@@ -42,26 +42,31 @@
         cpu_cores: "{{ ansible_processor_cores | default(ansible_processor_vcpus | default(4)) }}"
         # Map credentials.yaml vars to playbook vars
         scope: "{{ patroni_scope }}"
-        # pgtune calculations
-        pg_shared_buffers_mb: "{{ [ (ansible_memtotal_mb * 0.25) | int, 32768 ] | min }}"
+        # pgtune calculations - use ternary/if for min/max to avoid Jinja2 list issues
+        pg_shared_buffers_mb: "{{ (ansible_memtotal_mb * 0.25) | int if ((ansible_memtotal_mb * 0.25) | int) < 32768 else 32768 }}"
         pg_effective_cache_size_mb: "{{ (ansible_memtotal_mb * 0.75) | int }}"
         pg_maintenance_work_mem_mb: "{{ 512 if ansible_memtotal_mb <= 4096 else (1024 if ansible_memtotal_mb <= 16384 else 2048) }}"
         # max_connections: web/oltp workload default
-        pg_max_connections: "{{ [ 200, [ 100, (ansible_processor_cores | default(4) * 50) | int ] | max ] | min }}"
+        pg_max_connections: "{{ 200 if (200 < [100, (ansible_processor_cores | default(4) * 50) | int] | max) else ([100, (ansible_processor_cores | default(4) * 50) | int] | max) if ([100, (ansible_processor_cores | default(4) * 50) | int] | max) < 200 else 200 }}"
+        # Simpler max_connections: min(200, max(100, cpu*50))
+        _cpu50: "{{ (ansible_processor_cores | default(4) * 50) | int }}"
+        _max100_cpu50: "{{ 100 if _cpu50 < 100 else _cpu50 }}"
+        pg_max_connections: "{{ 200 if _max100_cpu50 > 200 else _max100_cpu50 }}"
         # WAL sizes
         pg_min_wal_size_mb: 1024
-        pg_max_wal_size_mb: "{{ [ 4096, [ 1024, (ansible_memtotal_mb * 0.05) | int ] | max ] | min }}"
+        pg_max_wal_size_mb: "{{ 4096 if (ansible_memtotal_mb * 0.05 | int) > 4096 else (1024 if (ansible_memtotal_mb * 0.05 | int) < 1024 else (ansible_memtotal_mb * 0.05 | int)) }}"
         # Parallel settings
-        pg_max_worker_processes: "{{ [ ansible_processor_cores | default(4), 8 ] | min }}"
-        pg_max_parallel_workers_per_gather: "{{ [ (ansible_processor_cores | default(4) // 2), 4 ] | min }}"
-        pg_max_parallel_workers: "{{ [ ansible_processor_cores | default(4), 8 ] | min }}"
+        pg_max_worker_processes: "{{ ansible_processor_cores | default(4) if ansible_processor_cores | default(4) < 8 else 8 }}"
+        pg_max_parallel_workers_per_gather: "{{ (ansible_processor_cores | default(4) // 2) if (ansible_processor_cores | default(4) // 2) < 4 else 4 }}"
+        pg_max_parallel_workers: "{{ ansible_processor_cores | default(4) if ansible_processor_cores | default(4) < 8 else 8 }}"
 
     - name: Calculate derived parameters (step 2 - needs pg_max_connections, pg_shared_buffers_mb from step 1)
       set_fact:
         # work_mem intermediate calculation
         _work_mem_raw_kb: "{{ (ansible_memtotal_mb * 1024 * 0.25) / ( pg_max_connections * 2 ) | int }}"
-        # wal_buffers: min(16MB, 3% of shared_buffers)
-        pg_wal_buffers_kb: "{{ [ 16384, (pg_shared_buffers_mb * 1024 * 0.03) | int ] | min }}"
+        # wal_buffers: min(16MB, 3% of shared_buffers) - use ternary to avoid min filter
+        _wal_3pct: "{{ (pg_shared_buffers_mb * 1024 * 0.03) | int }}"
+        pg_wal_buffers_kb: "{{ _wal_3pct if _wal_3pct < 16384 else 16384 }}"
         # Storage-aware settings (assume SSD for cloud VMs)
         pg_random_page_cost: 1.1
         pg_effective_io_concurrency: 200
@@ -72,8 +77,9 @@
 
     - name: Calculate work_mem (step 3 - needs _work_mem_raw_kb from step 2)
       set_fact:
-        # work_mem: ensure total work_mem * max_connections * 2 < 25% RAM
-        pg_work_mem_kb: "{{ [ 4096, [ _work_mem_raw_kb, 262144 ] | min ] | max }}"
+        # work_mem: ensure total work_mem * max_connections * 2 < 25% RAM - use ternary
+        _min_work: "{{ 4096 if _work_mem_raw_kb < 4096 else _work_mem_raw_kb }}"
+        pg_work_mem_kb: "{{ 262144 if _min_work > 262144 else _min_work }}"
 
     - name: Display calculated PostgreSQL parameters
       debug:
