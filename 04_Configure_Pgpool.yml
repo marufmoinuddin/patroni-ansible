@@ -25,9 +25,9 @@
     health_check_password: "{{ health_check_password }}"
     # Network
     vip: "{{ vip_address }}"
-    # Auto-detect the default NIC (eth0 on CentOS Stream 9, enp3s0 on Debian 12);
-    # optional vip_interface_override in credentials.yaml forces a specific NIC.
-    vip_interface: "{{ vip_interface_override | default(ansible_default_ipv4.interface) }}"
+    # NOTE: vip_interface is resolved in the "Set node-specific facts" task
+    # below because ansible_default_ipv4.interface is only available after
+    # fact gathering (not at play-vars load time).
     vip_cidr: "{{ vip_cidr }}"
     pgpool_port: 9999
     pcp_port: "{{ pcp_port }}"
@@ -40,6 +40,10 @@
         node_ip: "{{ ansible_default_ipv4.address }}"
         node_index: "{{ groups['pg_nodes'].index(inventory_hostname) + 1 }}"
         is_first_node: "{{ inventory_hostname == groups['pg_nodes'][0] }}"
+        # Auto-detect the default NIC (eth0 on CentOS Stream 9, enp3s0 on
+        # Debian 12); optional vip_interface_override in credentials.yaml
+        # forces a specific NIC.
+        vip_interface: "{{ vip_interface_override | default(ansible_default_ipv4.interface) }}"
 
     - name: Display node info
       debug:
