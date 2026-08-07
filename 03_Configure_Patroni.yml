@@ -235,7 +235,7 @@
           ansible.builtin.debug:
             msg:
               - "Data directory exists: {{ data_dir_stat.stat.exists }}"
-              - "ETCD keys found: {{ etcd_keys.stdout|int }}"
+              - "ETCD keys found: {{ etcd_keys.stdout | default('0') | int }}"
 
     - name: Wait for cleanup to settle
       ansible.builtin.pause:
