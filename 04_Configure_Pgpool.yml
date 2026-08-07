@@ -89,6 +89,7 @@
         url: "http://{{ item }}:8008/patroni"
         method: GET
         timeout: 5
+        return_content: yes
       loop: "{{ groups['pg_nodes'] }}"
       register: patroni_cluster
       failed_when: false
