@@ -48,8 +48,10 @@
         pg_maintenance_work_mem_mb: "{{ 512 if ansible_memtotal_mb <= 4096 else (1024 if ansible_memtotal_mb <= 16384 else 2048) }}"
         # max_connections: web/oltp workload default
         pg_max_connections: "{{ [ 200, [ 100, (ansible_processor_cores | default(4) * 50) | int ] | max ] | min }}"
-        # work_mem: ensure total work_mem * max_connections * 2 < 25% RAM
-        pg_work_mem_kb: "{{ [ 4096, [ ( (ansible_memtotal_mb * 1024 * 0.25) / ( ([ 200, [ 100, (ansible_processor_cores | default(4) * 50) | int ] | max ] * 2 ) ) ) | int, 262144 ] | min ] | max }}"
+        # Intermediate calculations for work_mem
+        _max_conn: "{{ [ 200, [ 100, (ansible_processor_cores | default(4) * 50) | int ] | max ] | min }}"
+        _work_mem_raw_kb: "{{ (ansible_memtotal_mb * 1024 * 0.25) / ( _max_conn * 2 ) | int }}"
+        pg_work_mem_kb: "{{ [ 4096, [ _work_mem_raw_kb, 262144 ] | min ] | max }}"
         # wal_buffers: min(16MB, 3% of shared_buffers)
         pg_wal_buffers_kb: "{{ [ 16384, (pg_shared_buffers_mb * 1024 * 0.03) | int ] | min }}"
         # WAL sizes
