@@ -181,6 +181,32 @@
         update_cache: yes
       when: ansible_os_family == "Debian"
 
+    # IMPORTANT: Install native pgpool2 BEFORE adding the Percona repo.
+    # Percona's libpgpool2 (4.7.x) conflicts with native pgpool2's pin on
+    # libpgpool2 (= 4.3.5). Installing first + pinning avoids "held broken packages".
+    - name: Install Pgpool-II daemon FIRST (before Percona repo) - Debian
+      ansible.builtin.apt:
+        name:
+          - pgpool2
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+      register: pgpool_install
+      until: pgpool_install is succeeded
+      retries: 3
+      delay: 10
+
+    - name: Pin native pgpool2 to avoid Percona repo conflicts (Debian)
+      ansible.builtin.copy:
+        dest: /etc/apt/preferences.d/pgpool2
+        content: |
+          Package: pgpool2 libpgpool2
+          Pin: release o=Debian
+          Pin-Priority: 1001
+        mode: '0644'
+      when: ansible_os_family == "Debian"
+      changed_when: false
+
     - name: Install curl and wget (RHEL/CentOS)
       ansible.builtin.dnf:
         name:
@@ -298,21 +324,6 @@
         state: present
         update_cache: yes
       when: ansible_os_family == "Debian"
-      register: pgpool_install
-      until: pgpool_install is succeeded
-      retries: 3
-      delay: 10
-
-    - name: Pin native pgpool2 to avoid Percona repo conflicts (Debian)
-      ansible.builtin.copy:
-        dest: /etc/apt/preferences.d/pgpool2
-        content: |
-          Package: pgpool2 libpgpool2
-          Pin: release o=Debian
-          Pin-Priority: 1001
-        mode: '0644'
-      when: ansible_os_family == "Debian"
-      changed_when: false
 
     - name: Install Pgpool-II (RHEL/CentOS)
       ansible.builtin.dnf:
