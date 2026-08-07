@@ -5,28 +5,32 @@
   vars_files:
     - credentials.yaml
   tasks:
-    - name: Uncomment en_US.UTF-8 and en_IN.UTF-8 in /etc/locale.gen
-      ansible.builtin.shell:
-        cmd: |
-          sed -i '/^#.*en_US.UTF-8/s/^#//' /etc/locale.gen
-          sed -i '/^#.*en_IN.UTF-8/s/^#//' /etc/locale.gen
-        creates: /etc/locale.gen
+    - name: Ensure en_US.UTF-8 is uncommented in /etc/locale.gen
+      ansible.builtin.lineinfile:
+        path: /etc/locale.gen
+        regexp: '^#\s*en_US\.UTF-8'
+        line: 'en_US.UTF-8 UTF-8'
+        state: present
       when: ansible_os_family == "Debian"
 
     - name: Regenerate locales
       ansible.builtin.command:
-        cmd: locale-gen
+        cmd: locale-gen en_US.UTF-8
       when: ansible_os_family == "Debian"
+      register: locale_gen_result
+      changed_when: locale_gen_result.rc == 0
 
     - name: Set locales in /etc/default/locale
-      ansible.builtin.lineinfile:
-        path: /etc/default/locale
-        line: "{{ item }}"
-        create: yes
-      loop:
-        - "LANG=en_US.UTF-8"
-        - "LANGUAGE=en_US.UTF-8"
-        - "LC_ALL=en_US.UTF-8"
+      ansible.builtin.copy:
+        dest: /etc/default/locale
+        content: |
+          LANG=en_US.UTF-8
+          LANGUAGE=en_US:en
+          LC_ALL=en_US.UTF-8
+      when: ansible_os_family == "Debian"
+
+    - name: Update locale environment
+      ansible.builtin.shell: update-locale LANG=en_US.UTF-8 LANGUAGE=en_US:en LC_ALL=en_US.UTF-8
       when: ansible_os_family == "Debian"
 
     - name: Set locale on RHEL/CentOS
@@ -53,49 +57,26 @@
       loop:
         - patroni
         - postgresql-16
-        - postgresql
-        - pgpool2
         - pgpool
+        - pgpool2
+        - etcd
       ignore_errors: true
 
     - name: Purge Patroni and PostgreSQL packages (Debian/Ubuntu)
       ansible.builtin.apt:
         name:
+          - patroni
+          - postgresql-16
+          - postgresql-16-pgpool2
+          - postgresql-client-16
+          - postgresql-common
           - percona-patroni
           - percona-postgresql-16
-          - postgresql-16
-          - postgresql-client-16
+          - percona-postgresql-client-16
         state: absent
         purge: yes
       ignore_errors: true
       when: ansible_os_family == "Debian"
-
-    - name: Remove Patroni and PostgreSQL packages (RHEL/CentOS)
-      ansible.builtin.dnf:
-        name:
-          - percona-patroni
-          - percona-postgresql16-server
-          - percona-postgresql16
-          - postgresql16-server
-          - postgresql16
-        state: absent
-      ignore_errors: true
-      when: ansible_os_family == "RedHat"
-
-    - name: Purge pgbackrest package (Debian/Ubuntu)
-      ansible.builtin.apt:
-        name: percona-pgbackrest
-        state: absent
-        purge: yes
-      ignore_errors: true
-      when: ansible_os_family == "Debian"
-
-    - name: Remove pgbackrest package (RHEL/CentOS)
-      ansible.builtin.dnf:
-        name: percona-pgbackrest
-        state: absent
-      ignore_errors: true
-      when: ansible_os_family == "RedHat"
 
     - name: Purge Pgpool packages (Debian/Ubuntu)
       ansible.builtin.apt:
@@ -107,35 +88,78 @@
       ignore_errors: true
       when: ansible_os_family == "Debian"
 
-    - name: Remove remaining PostgreSQL directories (Debian/Ubuntu)
+    - name: Purge Patroni and PostgreSQL packages (RHEL/CentOS)
+      ansible.builtin.dnf:
+        name:
+          - patroni
+          - postgresql16
+          - postgresql16-server
+          - postgresql16-contrib
+          - percona-patroni
+          - percona-postgresql16-server
+        state: absent
+        disable_gpg_check: true
+      ignore_errors: true
+      when: ansible_os_family == "RedHat"
+
+    - name: Purge Pgpool packages (RHEL/CentOS)
+      ansible.builtin.dnf:
+        name:
+          - percona-pgpool-II-pg16
+        state: absent
+        disable_gpg_check: true
+      ignore_errors: true
+      when: ansible_os_family == "RedHat"
+
+    - name: Remove Patroni data and config directories
       ansible.builtin.file:
         path: "{{ item }}"
         state: absent
       loop:
-        - /var/lib/postgresql
-        - /etc/postgresql
-        - /var/log/postgresql
+        - /var/lib/patroni
+        - /etc/patroni
+        - /var/log/patroni
+      ignore_errors: true
+
+    - name: Remove PostgreSQL data directories (Debian/Ubuntu)
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /var/lib/postgresql/16
+        - /var/lib/postgresql/16/main
+        - /postgres/data
+        - /etc/postgresql/16
       ignore_errors: true
       when: ansible_os_family == "Debian"
 
-    - name: Remove remaining PostgreSQL directories (RHEL/CentOS)
+    - name: Remove PostgreSQL data directories (RHEL/CentOS)
       ansible.builtin.file:
         path: "{{ item }}"
         state: absent
       loop:
         - /var/lib/pgsql/16
         - /var/lib/pgsql/16/data
-        - /etc/pgpool2
-        - /var/log/pgpool2
+        - /var/lib/pgsql/16/data/kyc
       ignore_errors: true
       when: ansible_os_family == "RedHat"
+
+    - name: Remove Pgpool config directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/pgpool2
+        - /etc/pgpool-II
+        - /var/log/pgpool2
+        - /var/log/pgpool
+      ignore_errors: true
 
     - name: Remove pgbackrest directories
       ansible.builtin.file:
         path: "{{ item }}"
         state: absent
       loop:
-        - /etc/pgbackrest.conf
         - /etc/pgbackrest
         - /var/log/pgbackrest
         - /var/lib/pgbackrest
@@ -153,6 +177,7 @@
           - curl
           - wget
           - gnupg2
+          - ca-certificates
         state: present
         update_cache: yes
       when: ansible_os_family == "Debian"
@@ -163,122 +188,97 @@
           - curl
           - wget
           - gnupg2
+          - ca-certificates
         state: present
+        disable_gpg_check: true
       when: ansible_os_family == "RedHat"
 
-    # --- Debian/Ubuntu repo setup ---
     - name: Download the percona-release repository package (Debian)
       ansible.builtin.get_url:
         url: "{{ percona_repo_deb_url }}"
-        dest: /tmp/percona-release_latest.generic_all.deb
+        dest: /tmp/percona-release_latest.deb
+        mode: '0644'
       when: ansible_os_family == "Debian"
 
     - name: Install the percona-release repository package (Debian)
       ansible.builtin.apt:
-        deb: /tmp/percona-release_latest.generic_all.deb
+        deb: /tmp/percona-release_latest.deb
       when: ansible_os_family == "Debian"
+
+    - name: Enable Percona PostgreSQL 16 repository (Debian)
+      ansible.builtin.shell: percona-release setup ppg-16
+      when: ansible_os_family == "Debian"
+      changed_when: true
+
+    - name: Download the percona-release repository package (RHEL/CentOS)
+      ansible.builtin.get_url:
+        url: "{{ percona_repo_rpm_url }}"
+        dest: /tmp/percona-release-latest.noarch.rpm
+        mode: '0644'
+      when: ansible_os_family == "RedHat"
+
+    - name: Install the percona-release repository package (RHEL/CentOS)
+      ansible.builtin.dnf:
+        name: /tmp/percona-release-latest.noarch.rpm
+        disable_gpg_check: true
+      when: ansible_os_family == "RedHat"
+
+    - name: Enable Percona PostgreSQL 16 repository (RHEL/CentOS)
+      ansible.builtin.shell: percona-release setup ppg-16
+      when: ansible_os_family == "RedHat"
+      changed_when: true
 
     - name: Refresh the local apt cache
       ansible.builtin.apt:
         update_cache: yes
       when: ansible_os_family == "Debian"
 
-    - name: Enable the repository for Percona PostgreSQL 16 (Debian)
-      ansible.builtin.command:
-        cmd: percona-release setup ppg-16
-      when: ansible_os_family == "Debian"
-
-    # --- RHEL/CentOS repo setup ---
-    - name: Enable EPEL repository (RHEL/CentOS)
-      ansible.builtin.dnf:
-        name: epel-release
-        state: present
-      when: ansible_os_family == "RedHat"
-
-    - name: Enable CRB repository (RHEL/CentOS Stream)
-      ansible.builtin.command:
-        cmd: dnf config-manager --set-enabled crb
-      register: crb_result
-      changed_when: crb_result.rc == 0
-      when: ansible_os_family == "RedHat"
-
-    - name: Install percona-release repository (RHEL/CentOS)
-      ansible.builtin.dnf:
-        name: "{{ percona_repo_rpm_url }}"
-        state: present
-        disable_gpg_check: true  # key is installed by the RPM itself
-      when: ansible_os_family == "RedHat"
-
-    - name: Enable Percona PostgreSQL 16 repository (RHEL/CentOS)
-      ansible.builtin.command:
-        cmd: percona-release setup ppg-16
-      when: ansible_os_family == "RedHat"
-
-- name: Install pgBackRest on PG Backrest Node
-  hosts: pg_backrest
-  become: true
-  vars_files:
-    - credentials.yaml
-  tasks:
-    - name: Install pgBackRest package (Debian/Ubuntu)
-      ansible.builtin.apt:
-        name: percona-pgbackrest
-        state: present
-        update_cache: yes
-      when: ansible_os_family == "Debian"
-
-    - name: Install pgBackRest package (RHEL/CentOS)
-      ansible.builtin.dnf:
-        name: percona-pgbackrest
-        state: present
-      when: ansible_os_family == "RedHat"
-
-- name: Install ETCD, Patroni, PostgreSQL 16, and Pgpool-II on PostgreSQL Nodes
-  hosts: pg_nodes
-  become: true
-  vars_files:
-    - credentials.yaml
-  tasks:
     - name: Install Percona PostgreSQL 16 packages (Debian/Ubuntu)
       ansible.builtin.apt:
-        name: percona-postgresql-16
+        name:
+          - percona-postgresql-16
+          - percona-postgresql-client-16
+          - postgresql-16-pgpool2
         state: present
-        update_cache: yes
       when: ansible_os_family == "Debian"
 
     - name: Install Percona PostgreSQL 16 packages (RHEL/CentOS)
       ansible.builtin.dnf:
         name:
           - percona-postgresql16-server
-          - percona-postgresql16
+          - percona-postgresql16-contrib
         state: present
+        disable_gpg_check: true
       when: ansible_os_family == "RedHat"
 
     - name: Install Python and auxiliary packages (Debian/Ubuntu)
       ansible.builtin.apt:
         name:
-          - python3-pip
-          - python3-dev
+          - python3
           - python3-psycopg2
-          - binutils
-        state: present
+          - python3-pip
+          - python3-etcd
+          - python3-yaml
+          - jq
       when: ansible_os_family == "Debian"
 
     - name: Install Python and auxiliary packages (RHEL/CentOS)
       ansible.builtin.dnf:
         name:
-          - python3-pip
-          - python3-devel
+          - python3
           - python3-psycopg2
-          - binutils
-        state: present
+          - python3-pip
+          - python3-etcd
+          - python3-yaml
+          - jq
+        disable_gpg_check: true
       when: ansible_os_family == "RedHat"
 
     - name: Install ETCD, Patroni, and pgBackRest packages (Debian/Ubuntu)
       ansible.builtin.apt:
         name:
-          - percona-patroni
           - etcd
+          - percona-patroni
           - percona-pgbackrest
         state: present
       when: ansible_os_family == "Debian"
@@ -286,12 +286,11 @@
     - name: Install ETCD, Patroni, and pgBackRest packages (RHEL/CentOS)
       ansible.builtin.dnf:
         name:
-          - percona-patroni
-          - percona-patroni-etcd
           - etcd
+          - percona-patroni
           - percona-pgbackrest
-          - jq
         state: present
+        disable_gpg_check: true
       when: ansible_os_family == "RedHat"
 
     - name: Install Pgpool-II (Debian/Ubuntu)
@@ -299,38 +298,43 @@
         name:
           - postgresql-16-pgpool2
         state: present
+        update_cache: yes
       when: ansible_os_family == "Debian"
 
     - name: Install Pgpool-II (RHEL/CentOS)
       ansible.builtin.dnf:
         name:
           - percona-pgpool-II-pg16
-          - percona-pgpool-II-pg16-extensions
         state: present
+        disable_gpg_check: true
       when: ansible_os_family == "RedHat"
 
-    - name: Stop and disable all installed services
-      ansible.builtin.systemd:
-        name: "{{ item }}"
-        state: stopped
-        enabled: false
-      loop:
-        - etcd
-        - patroni
-        - postgresql-16
-        - pgpool2
-      ignore_errors: true
-
-    - name: Remove the existing Postgres data directory (Debian/Ubuntu)
-      ansible.builtin.file:
-        path: /var/lib/postgresql/16/main
-        state: absent
-        force: yes
+    - name: Install Percona pg_stat_monitor (Debian/Ubuntu)
+      ansible.builtin.apt:
+        name:
+          - percona-pg-stat-monitor16
+        state: present
       when: ansible_os_family == "Debian"
 
-    - name: Remove the existing Postgres data directory (RHEL/CentOS)
-      ansible.builtin.file:
-        path: /var/lib/pgsql/16/data
-        state: absent
-        force: yes
+    - name: Install Percona pg_stat_monitor (RHEL/CentOS)
+      ansible.builtin.dnf:
+        name:
+          - percona-pg_stat_monitor16
+        state: present
+        disable_gpg_check: true
+      when: ansible_os_family == "RedHat"
+
+    - name: Install docker.io for PMM client (Debian/Ubuntu)
+      ansible.builtin.apt:
+        name:
+          - docker.io
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Install docker for PMM client (RHEL/CentOS)
+      ansible.builtin.dnf:
+        name:
+          - docker
+        state: present
+        disable_gpg_check: true
       when: ansible_os_family == "RedHat"
