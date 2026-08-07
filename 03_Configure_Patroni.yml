@@ -3,15 +3,8 @@
   hosts: pg_nodes
   become: true
   gather_facts: true
-  vars:
-    etcd_token: 'PostgreSQL_HA_Cluster_1'
-    etcd_data_dir: '/var/lib/etcd'
-    etcd_nodes: "{{ groups['pg_nodes'] | map('extract', hostvars) | map(attribute='ansible_hostname') | list }}"
-    etcd_ips: "{{ groups['pg_nodes'] | map('extract', hostvars) | map(attribute='ansible_default_ipv4.address') | list }}"
-    etcd_endpoints: "{% for ip in etcd_ips %}http://{{ ip }}:2379{% if not loop.last %},{% endif %}{% endfor %}"
-    pg_version: "16"
-    scope: "kyc"
-    namespace: "percona_lab"
+  vars_files:
+    - credentials.yaml
 
   tasks:
     - name: Set OS-specific paths (Debian/Ubuntu)
@@ -224,23 +217,23 @@
 
             users:
                 admin:
-                    password: qaz123
+                    password: "{{ patroni_admin_password }}"
                     options:
                         - createrole
                         - createdb
                 percona:
-                    password: qaz123
+                    password: "{{ percona_password }}"
                     options:
                         - createrole
                         - createdb
                 pgpool:
-                    password: pgpool_pass
+                    password: "{{ pgpool_password }}"
                     options:
                         - createrole
                         - createdb
 
           postgresql:
-              cluster_name: cluster_1
+              cluster_name: "{{ cluster_name }}"
               listen: 0.0.0.0:5432
               connect_address: {{ node_ip }}:5432
               data_dir: {{ data_dir }}
@@ -248,11 +241,11 @@
               pgpass: /tmp/pgpass0
               authentication:
                   replication:
-                      username: replicator
-                      password: replPasswd
+                      username: "{{ replicator_username }}"
+                      password: "{{ replicator_password }}"
                   superuser:
                       username: postgres
-                      password: qaz123
+                      password: "{{ postgres_password }}"
               parameters:
                   unix_socket_directories: "{{ pg_socket_dir }}"
               create_replica_methods:

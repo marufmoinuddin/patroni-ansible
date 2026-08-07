@@ -3,13 +3,15 @@
   hosts: pg_backrest
   become: true
   gather_facts: true
+  vars_files:
+    - credentials.yaml
   vars:
-    pg_pmm_user_password: "StrongPassword123"  # Change this to a secure password
-    pmm_admin_password: "NewAdminPassword123"  # Change this to a secure password for PMM admin
+    pg_pmm_user_password: "{{ pg_pmm_user_password }}"
+    pmm_admin_password: "{{ pmm_admin_password }}"
     pmm_server_port: 443
     pmm_server_version: "3"
-    scope: "kyc"
-    pgversion: "16"
+    scope: "{{ patroni_scope }}"
+    pgversion: "{{ pg_version }}"
 
   tasks:
     - name: Install Docker prerequisites (Debian/Ubuntu)
@@ -206,13 +208,15 @@
 - name: Install PMM Client on PostgreSQL Nodes
   hosts: pg_nodes
   become: true
+  vars_files:
+    - credentials.yaml
   vars:
-    pg_pmm_user_password: "StrongPassword123"  # Should match the password used above
+    pg_pmm_user_password: "{{ pg_pmm_user_password }}"
     pmm_server_host: "{{ hostvars[groups['pg_backrest'][0]]['ansible_default_ipv4']['address'] }}"
-    pmm_admin_password: "NewAdminPassword123"  # Should match the password used above
+    pmm_admin_password: "{{ pmm_admin_password }}"
     pmm_server_port: 443
-    scope: "kyc"
-    pgversion: "16"
+    scope: "{{ patroni_scope }}"
+    pgversion: "{{ pg_version }}"
     pg_data_dir: "{{ '/postgres/data/' ~ pgversion ~ '/' ~ scope if ansible_os_family == 'Debian' else '/var/lib/pgsql/' ~ pgversion ~ '/data/' ~ scope }}"
 
   tasks:
@@ -289,10 +293,12 @@
 - name: Configure PMM Client on all PostgreSQL nodes
   hosts: pg_nodes
   become: true
+  vars_files:
+    - credentials.yaml
   vars:
-    pg_pmm_user_password: "StrongPassword123"
+    pg_pmm_user_password: "{{ pg_pmm_user_password }}"
     pmm_server_host: "{{ hostvars[groups['pg_backrest'][0]]['ansible_default_ipv4']['address'] }}"
-    pmm_admin_password: "NewAdminPassword123"
+    pmm_admin_password: "{{ pmm_admin_password }}"
     pmm_server_port: 443
 
   tasks:

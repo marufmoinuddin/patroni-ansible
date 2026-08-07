@@ -2,6 +2,8 @@
 - name: Set up locale (Debian/Ubuntu only)
   hosts: pg_nodes
   become: true
+  vars_files:
+    - credentials.yaml
   tasks:
     - name: Uncomment en_US.UTF-8 and en_IN.UTF-8 in /etc/locale.gen
       ansible.builtin.shell:
@@ -40,6 +42,8 @@
 - name: Purge existing Patroni and PostgreSQL installations in all nodes
   hosts: all
   become: true
+  vars_files:
+    - credentials.yaml
   tasks:
     - name: Stop and disable Patroni, PostgreSQL, Pgpool services
       ansible.builtin.systemd:
@@ -140,9 +144,8 @@
 - name: Install Percona Distribution and dependencies on all nodes
   hosts: all
   become: true
-  vars:
-    percona_repo_deb_url: "https://repo.percona.com/apt/percona-release_latest.generic_all.deb"
-    percona_repo_rpm_url: "https://repo.percona.com/yum/percona-release-latest.noarch.rpm"
+  vars_files:
+    - credentials.yaml
   tasks:
     - name: Install curl and wget (Debian/Ubuntu)
       ansible.builtin.apt:
@@ -214,6 +217,8 @@
 - name: Install pgBackRest on PG Backrest Node
   hosts: pg_backrest
   become: true
+  vars_files:
+    - credentials.yaml
   tasks:
     - name: Install pgBackRest package (Debian/Ubuntu)
       ansible.builtin.apt:
@@ -231,6 +236,8 @@
 - name: Install ETCD, Patroni, PostgreSQL 16, and Pgpool-II on PostgreSQL Nodes
   hosts: pg_nodes
   become: true
+  vars_files:
+    - credentials.yaml
   tasks:
     - name: Install Percona PostgreSQL 16 packages (Debian/Ubuntu)
       ansible.builtin.apt:

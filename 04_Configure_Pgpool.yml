@@ -3,32 +3,32 @@
   hosts: pg_nodes
   become: true
   gather_facts: true
+  vars_files:
+    - credentials.yaml
   vars:
-    pg_version: "16"
-    vip: "192.168.122.200"
-    vip_interface: "eth0"  # Confirmed: CentOS Stream VMs use eth0
-    vip_cidr: "24"
-    pgpool_port: 9999
-    pcp_port: 9898
-    wd_port: 9000
-    wd_priority_base: 1
-    scope: "kyc"
-    data_dir: "{{ '/postgres/data/' ~ pg_version ~ '/' ~ scope if ansible_os_family == 'Debian' else '/var/lib/pgsql/' ~ pg_version ~ '/data/' ~ scope }}"
+    # OS-specific paths (computed from credentials.yaml vars)
+    data_dir: "{{ '/postgres/data/' ~ pg_version ~ '/' ~ patroni_scope if ansible_os_family == 'Debian' else '/var/lib/pgsql/' ~ pg_version ~ '/data/' ~ patroni_scope }}"
     patroni_config: "/etc/patroni/patroni.yml"
-    # OS-specific paths
     pgpool_conf_dir: "{{ '/etc/pgpool2' if ansible_os_family == 'Debian' else '/etc/pgpool-II' }}"
     pgpool_service_name: "{{ 'pgpool2' if ansible_os_family == 'Debian' else 'pgpool' }}"
     pgpool_log_dir: "{{ '/var/log/pgpool2' if ansible_os_family == 'Debian' else '/var/log/pgpool' }}"
     pg_md5_bin: "/usr/bin/pg_md5"
     if_cmd_path: "/usr/sbin"
     arping_path: "/usr/sbin"
-    # Pgpool users (must match Patroni bootstrap.users for pgpool)
+    # Pgpool users (from credentials.yaml)
     pgpool_admin_user: "pgpool_admin"
-    pgpool_admin_password: "pgpool_admin_pass"  # Change in production!
-    pcp_user: "pgpool_pcp"
-    pcp_password: "pcp_pass"  # Change in production!
-    health_check_user: "pgpool"
-    health_check_password: "pgpool_pass"  # Must match Patroni bootstrap pgpool user
+    pgpool_admin_password: "{{ pgpool_admin_password }}"
+    pcp_user: "{{ pcp_user }}"
+    pcp_password: "{{ pcp_password }}"
+    health_check_user: "{{ health_check_user }}"
+    health_check_password: "{{ health_check_password }}"
+    # Network
+    vip: "{{ vip_address }}"
+    vip_interface: "{{ vip_interface }}"
+    vip_cidr: "{{ vip_cidr }}"
+    pgpool_port: 9999
+    pcp_port: "{{ pcp_port }}"
+    wd_port: "{{ wd_port }}"
 
   tasks:
     - name: Set node-specific facts

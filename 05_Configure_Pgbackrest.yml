@@ -3,10 +3,12 @@
   hosts: pg_backrest
   become: true
   gather_facts: true
+  vars_files:
+    - credentials.yaml
   vars:
-    scope: "kyc"
-    pgversion: "16"
-    repo_path: "/postgres/pgbackup"
+    scope: "{{ patroni_scope }}"
+    pgversion: "{{ pg_version }}"
+    repo_path: "{{ pgbackrest_repo_path }}"
     data_dir: "{{ '/postgres/data/' ~ pgversion ~ '/' ~ scope if ansible_os_family == 'Debian' else '/var/lib/pgsql/' ~ pgversion ~ '/data/' ~ scope }}"
     ssh_dir: "{{ '/var/lib/postgresql/.ssh' if ansible_os_family == 'Debian' else '/var/lib/pgsql/.ssh' }}"
 

@@ -3,13 +3,8 @@
   hosts: pg_nodes
   become: true
   gather_facts: true
-
-  vars:
-    etcd_token: 'PostgreSQL_HA_Cluster_1'
-    etcd_data_dir: '/var/lib/etcd'
-    etcd_nodes: "{{ groups['pg_nodes'] | map('extract', hostvars) | map(attribute='ansible_hostname') | list }}"
-    etcd_ips: "{{ groups['pg_nodes'] | map('extract', hostvars) | map(attribute='ansible_default_ipv4.address') | list }}"
-    etcd_endpoints: "{% for ip in etcd_ips %}http://{{ ip }}:2379{% if not loop.last %},{% endif %}{% endfor %}"
+  vars_files:
+    - credentials.yaml
 
   tasks:
     - name: Install ETCD package (Debian/Ubuntu)
