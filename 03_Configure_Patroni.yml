@@ -10,7 +10,7 @@
     - name: Set OS-specific paths (Debian/Ubuntu)
       set_fact:
         base_data_dir: "/postgres/data/{{ pg_version }}"
-        data_dir: "/postgres/data/{{ pg_version }}/{{ scope }}"
+        data_dir: "/postgres/data/{{ pg_version }}/{{ patroni_scope }}"
         pg_bin_dir: "/usr/lib/postgresql/{{ pg_version }}/bin"
         pg_socket_dir: "/var/run/postgresql"
         pg_service: "postgresql"
@@ -20,7 +20,7 @@
     - name: Set OS-specific paths (RHEL/CentOS)
       set_fact:
         base_data_dir: "/var/lib/pgsql/{{ pg_version }}"
-        data_dir: "/var/lib/pgsql/{{ pg_version }}/data/{{ scope }}"
+        data_dir: "/var/lib/pgsql/{{ pg_version }}/data/{{ patroni_scope }}"
         pg_bin_dir: "/usr/pgsql-{{ pg_version }}/bin"
         pg_socket_dir: "/var/run/postgresql"
         pg_service: "postgresql-{{ pg_version }}"
@@ -40,6 +40,8 @@
         # Memory in MB
         total_ram_mb: "{{ ansible_memtotal_mb }}"
         cpu_cores: "{{ ansible_processor_cores | default(ansible_processor_vcpus | default(4)) }}"
+        # Map credentials.yaml vars to playbook vars
+        scope: "{{ patroni_scope }}"
         # pgtune calculations
         pg_shared_buffers_mb: "{{ [ (ansible_memtotal_mb * 0.25) | int, 32768 ] | min }}"
         pg_effective_cache_size_mb: "{{ (ansible_memtotal_mb * 0.75) | int }}"
@@ -88,6 +90,12 @@
           - "jit: {{ pg_jit }}"
           - "=========================================="
 
+    - name: Set cluster facts
+      set_fact:
+        node_name: "{{ ansible_hostname }}"
+        node_ip: "{{ ansible_default_ipv4.address }}"
+        is_primary: "{{ inventory_hostname == groups['pg_nodes'][0] }}"
+
     - name: Display OS-specific paths
       debug:
         msg:
@@ -109,7 +117,7 @@
 
     - name: Remove the PostgreSQL cluster (Debian/Ubuntu - pg_dropcluster)
       ansible.builtin.shell: |
-        sudo pg_dropcluster {{ pg_version }} "{{ scope }}"
+        sudo pg_dropcluster {{ pg_version }} "{{ patroni_scope }}"
       ignore_errors: true
       when: ansible_os_family == "Debian"
 
@@ -123,13 +131,13 @@
 
     # PostgreSQL Initialization - ONLY ON PRIMARY
     - name: Create PostgreSQL cluster using pg_createcluster on primary node only (Debian/Ubuntu)
-      ansible.builtin.command: sudo pg_createcluster {{ pg_version }} {{ scope }} -d {{ data_dir }}
+      ansible.builtin.command: sudo pg_createcluster {{ pg_version }} {{ patroni_scope }} -d {{ data_dir }}
       when: ansible_os_family == "Debian" and is_primary
 
     # Stop the PostgreSQL cluster
     - name: Stop the PostgreSQL cluster (Debian/Ubuntu)
       ansible.builtin.shell: |
-        sudo /usr/bin/pg_ctlcluster "{{ pg_version }}-{{ scope }}" stop
+        sudo /usr/bin/pg_ctlcluster "{{ pg_version }}-{{ patroni_scope }}" stop
       ignore_errors: true
       when: ansible_os_family == "Debian"
 
@@ -169,12 +177,12 @@
     - name: Perform complete ETCD cleanup
       ansible.builtin.shell: |
         for key in \
-          "/{{ namespace }}/{{ scope }}" \
-          "/{{ namespace }}/{{ scope }}/leader" \
-          "/{{ namespace }}/{{ scope }}/system_id" \
-          "/{{ namespace }}/{{ scope }}/initialize" \
-          "/{{ namespace }}/{{ scope }}/members" \
-          "/{{ namespace }}/{{ scope }}/config"
+          "/{{ namespace }}/{{ patroni_scope }}" \
+          "/{{ namespace }}/{{ patroni_scope }}/leader" \
+          "/{{ namespace }}/{{ patroni_scope }}/system_id" \
+          "/{{ namespace }}/{{ patroni_scope }}/initialize" \
+          "/{{ namespace }}/{{ patroni_scope }}/members" \
+          "/{{ namespace }}/{{ patroni_scope }}/config"
         do
           /usr/bin/etcdctl --endpoints="{{ etcd_endpoints }}" del "$key" --prefix
         done
