@@ -86,6 +86,16 @@
         mode: '0755'
       when: ansible_os_family == "Debian"
 
+    # Ensure pid directory exists (Debian native pgpool2 4.3.5 fails without it)
+    - name: Ensure Pgpool pid directory exists (Debian)
+      file:
+        path: "/var/run/pgpool"
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: '0755'
+      when: ansible_os_family == "Debian"
+
     # ============================================================
     # 2. CREATE PGROOL USERS IN POSTGRESQL (ON PRIMARY)
     # ============================================================
@@ -286,13 +296,35 @@
           failback_command = ''
           follow_master_command = '{{ pgpool_conf_dir }}/follow_master.sh %d %h %p %D %m %H %M %P %r %R'
 
-          # ----------------------------------------------------------------------
-          # WATCHDOG (High Availability) - Pgpool 4.7+ parameter names
-          # ----------------------------------------------------------------------
+          # ============================================================
+          # WATCHDOG CONFIGURATION - OS-conditional
+          # ============================================================
+          {% if ansible_os_family == "Debian" %}
+          # Debian native pgpool2 4.3.5: legacy watchdog params in pgpool.conf
           use_watchdog = on
           wd_lifecheck_method = heartbeat
           wd_monitoring_interfaces_list = '{{ vip_interface }}'
-          # Watchdog nodes - indexed tuples, ALL 3 on EVERY node (Pgpool 4.7 format)
+          # Watchdog nodes - legacy names (wd_hostnameN, wd_port, wd_priorityN, wd_authkeyN)
+          {% for node in groups['pg_nodes'] %}
+          wd_hostname{{ loop.index0 }} = '{{ hostvars[node]['ansible_default_ipv4']['address'] }}'
+          wd_port{{ loop.index0 }} = {{ wd_port }}
+          pgpool_port{{ loop.index0 }} = {{ pgpool_port }}
+          {% endfor %}
+          wd_priority0 = {{ wd_priority_base + (3 - (node_index | int)) }}
+          wd_authkey0 = ''
+          # Heartbeat lifecheck - legacy names
+          {% for node in groups['pg_nodes'] %}
+          heartbeat_destination{{ loop.index0 }} = '{{ hostvars[node]['ansible_default_ipv4']['address'] }}'
+          heartbeat_destination_port{{ loop.index0 }} = {{ wd_port }}
+          heartbeat_device{{ loop.index0 }} = '{{ vip_interface }}'
+          {% endfor %}
+          delegate_IP = '{{ vip }}'
+          {% else %}
+          # RHEL/CentOS Percona pgpool-II 4.7+: modern params in pgpool.conf
+          use_watchdog = on
+          wd_lifecheck_method = heartbeat
+          wd_monitoring_interfaces_list = '{{ vip_interface }}'
+          # Watchdog nodes - indexed tuples (Pgpool 4.7 format)
           {% for node in groups['pg_nodes'] %}
           hostname{{ loop.index0 }} = '{{ hostvars[node]['ansible_default_ipv4']['address'] }}'
           wd_port{{ loop.index0 }} = {{ wd_port }}
@@ -301,16 +333,14 @@
           # Local node priority + auth key (single params, not indexed, in 4.7)
           wd_priority = {{ wd_priority_base + (3 - (node_index | int)) }}
           wd_authkey = ''
-
-          # Heartbeat lifecheck - 4.7 names (heartbeat_hostname/port/device)
+          # Heartbeat lifecheck - 4.7 names
           {% for node in groups['pg_nodes'] %}
           heartbeat_hostname{{ loop.index0 }} = '{{ hostvars[node]['ansible_default_ipv4']['address'] }}'
           heartbeat_port{{ loop.index0 }} = {{ wd_port }}
           heartbeat_device{{ loop.index0 }} = '{{ vip_interface }}'
           {% endfor %}
-
-          # Virtual IP (VIP) management
           delegate_ip = '{{ vip }}'
+          {% endif %}
           if_cmd_path = '{{ if_cmd_path }}'
           if_up_cmd = '{{ if_cmd_path }}/ip addr add {{ vip }}/{{ vip_cidr }} dev {{ vip_interface }} label {{ vip_interface }}:pgpool'
           if_down_cmd = '{{ if_cmd_path }}/ip addr del {{ vip }}/{{ vip_cidr }} dev {{ vip_interface }}'
@@ -479,9 +509,10 @@
           exit 0
 
     # ============================================================
-    # 6. CONFIGURE WATCHDOG (pgpool_watchdog.conf) - ALL INLINE
+    # 6. CONFIGURE WATCHDOG - OS-conditional
     # ============================================================
-    - name: Configure pgpool_watchdog.conf
+    # RHEL/CentOS Percona pgpool-II 4.7+: uses separate pgpool_watchdog.conf
+    - name: Configure pgpool_watchdog.conf (RHEL/CentOS only)
       copy:
         dest: "{{ pgpool_conf_dir }}/pgpool_watchdog.conf"
         owner: postgres
@@ -521,6 +552,7 @@
           arping_path = '{{ arping_path }}'
           arping_cmd = '{{ arping_path }}/arping -U {{ vip }} -w 1 -I {{ vip_interface }}'
       notify: restart pgpool
+      when: ansible_os_family == "RedHat"
 
     # ============================================================
     # 7. SYSTEMD OVERRIDES (VIP capabilities + fast stop)
