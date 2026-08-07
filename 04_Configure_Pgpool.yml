@@ -312,11 +312,11 @@
           {% endfor %}
           wd_priority0 = {{ wd_priority_base + (3 - (node_index | int)) }}
           wd_authkey0 = ''
-          # Heartbeat lifecheck - legacy names
+          # Heartbeat lifecheck - legacy names (4.3: heartbeat_interfaceN)
           {% for node in groups['pg_nodes'] %}
           heartbeat_destination{{ loop.index0 }} = '{{ hostvars[node]['ansible_default_ipv4']['address'] }}'
           heartbeat_destination_port{{ loop.index0 }} = {{ wd_port }}
-          heartbeat_device{{ loop.index0 }} = '{{ vip_interface }}'
+          heartbeat_interface{{ loop.index0 }} = '{{ vip_interface }}'
           {% endfor %}
           delegate_IP = '{{ vip }}'
           {% else %}
