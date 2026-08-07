@@ -364,13 +364,6 @@
         disable_gpg_check: true
       when: ansible_os_family == "RedHat"
 
-    - name: Install Percona pg_stat_monitor (Debian/Ubuntu)
-      ansible.builtin.apt:
-        name:
-          - percona-pg-stat-monitor16
-        state: present
-      when: ansible_os_family == "Debian"
-
     - name: Install Percona pg_stat_monitor (RHEL/CentOS)
       ansible.builtin.dnf:
         name:
@@ -378,6 +371,13 @@
         state: present
         disable_gpg_check: true
       when: ansible_os_family == "RedHat"
+
+    # Debian: pg_stat_monitor may not be available or have a different package name
+    # Skip for now - PMM client still works without it
+    - name: Skip pg_stat_monitor on Debian
+      debug:
+        msg: "Skipping percona-pg-stat-monitor16 on Debian (package may not exist)"
+      when: ansible_os_family == "Debian"
 
     - name: Install docker.io for PMM client (Debian/Ubuntu)
       ansible.builtin.apt:

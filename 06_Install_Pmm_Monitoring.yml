@@ -175,10 +175,18 @@
   vars:
     pgversion: "16"
   tasks:
-    - name: Install percona-pg_stat_monitor16 package
+    - name: Install percona-pg_stat_monitor16 package (RHEL/CentOS only)
       package:
         name: percona-pg_stat_monitor16
         state: present
+      when: ansible_os_family == "RedHat"
+
+    # Debian: pg_stat_monitor may not be available or have a different package name
+    # Skip for now - PMM client still works without it
+    - name: Skip pg_stat_monitor on Debian
+      debug:
+        msg: "Skipping percona-pg_stat_monitor16 on Debian (package may not exist)"
+      when: ansible_os_family == "Debian"
 
     - name: Enable PMM client repository (Debian/Ubuntu)
       command: percona-release enable pmm3-client release
