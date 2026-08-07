@@ -418,9 +418,23 @@
     # Set up SSH known_hosts to prevent interactive prompts for each pg_node to backrest server
     - name: Add pgBackRest host to known_hosts
       shell: |
-        sudo -u postgres ssh-keyscan -t rsa {{ groups['pg_backrest'][0] }} >> {{ ssh_dir }}/known_hosts
-      args:
-        creates: "{{ ssh_dir }}/known_hosts"
+        sudo -u postgres ssh-keyscan -t rsa,ecdsa,ed25519 {{ groups['pg_backrest'][0] }} >> {{ ssh_dir }}/known_hosts
+      changed_when: false
+
+    # Same host-key-prompt fix as the pgBackRest node: pgBackRest's internal ssh
+    # has no StrictHostKeyChecking control; accept-new prevents a hang when the
+    # repo host's key is unknown/changed.
+    - name: Add ssh config for postgres user (avoid host-key prompt hang)
+      copy:
+        dest: "{{ ssh_dir }}/config"
+        content: |
+          Host *
+              StrictHostKeyChecking accept-new
+              UserKnownHostsFile ~/.ssh/known_hosts
+        owner: postgres
+        group: postgres
+        mode: '0600'
+      when: ansible_os_family == "Debian"
 
     - name: Ensure known_hosts has proper permissions
       file:
@@ -445,12 +459,29 @@
   tasks:
     # pgBackRest connects OUT to each DB node; add all pg_node host keys to its known_hosts.
     # Use the .home.local fqdns from pg_nodes (matches pgbackrest.conf pgN-host values).
+    # NOTE: must NOT use `creates:` here -- with a loop, the first item creates the file
+    # and all subsequent items skip, leaving db2/db3 keys out of known_hosts.
     - name: Add all PostgreSQL node hosts to pgBackRest known_hosts
       shell: |
-        sudo -u postgres ssh-keyscan -t rsa {{ item }} >> {{ ssh_dir }}/known_hosts
+        sudo -u postgres ssh-keyscan -t rsa,ecdsa,ed25519 {{ item }} >> {{ ssh_dir }}/known_hosts
       loop: "{{ pg_nodes | map(attribute='fqdn') | list }}"
-      args:
-        creates: "{{ ssh_dir }}/known_hosts"
+      changed_when: false
+
+    # pgBackRest's internal ssh passes -o PasswordAuthentication=no but NOT
+    # StrictHostKeyChecking. On fresh/rebuilt VMs the host key is unknown and ssh
+    # blocks waiting for a host-key prompt that never comes under ansible's
+    # non-interactive shell. accept-new makes it trust unknown keys silently.
+    - name: Add ssh config for postgres user (avoid host-key prompt hang)
+      copy:
+        dest: "{{ ssh_dir }}/config"
+        content: |
+          Host *
+              StrictHostKeyChecking accept-new
+              UserKnownHostsFile ~/.ssh/known_hosts
+        owner: postgres
+        group: postgres
+        mode: '0600'
+      when: ansible_os_family == "Debian"
 
     - name: Ensure known_hosts has proper permissions (pgBackRest node)
       file:
@@ -469,11 +500,13 @@
       command: sudo -iu postgres pgbackrest --stanza={{ scope }} stanza-create
       changed_when: false
       ignore_errors: yes
+      timeout: 120
 
     - name: Take initial full backup
       command: sudo -iu postgres pgbackrest --stanza={{ scope }} --type=full backup
       changed_when: false
       ignore_errors: yes
+      timeout: 300
 
     - name: Print message for stanza creation
       debug:
