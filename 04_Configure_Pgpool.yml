@@ -84,10 +84,10 @@
     # NOTE: psql is NOT on PATH for the postgres user on a clean RHEL install.
     # Use the absolute path (RHEL: /usr/pgsql-16/bin/psql, Debian: /usr/bin/psql).
     # We must target the *current* Patroni leader (which may not be db1 after failover).
-    - name: Discover current Patroni leader via REST API (curl)
+    - name: Discover current Patroni leader via REST API
       shell: |
-        for ip in {{ groups['pg_nodes'] | join(' ') }}; do
-          role=$(curl -s --connect-timeout 3 http://$ip:8008/patroni 2>/dev/null | python3 -c "import sys, json; print(json.load(sys.stdin)['role'])" 2>/dev/null)
+        for ip in 192.168.122.150 192.168.122.151 192.168.122.152; do
+          role=$(curl -s --connect-timeout 3 "http://$ip:8008/patroni" 2>/dev/null | python3 -c "import sys, json; data = json.load(sys.stdin); print(data.get('role', ''))" 2>/dev/null)
           if [ "$role" = "primary" ]; then
             echo "$ip"
             exit 0
@@ -99,6 +99,8 @@
       failed_when: false
       run_once: true
       delegate_to: "{{ groups['pg_nodes'][0] }}"
+      args:
+        executable: /bin/bash
 
     - name: Set patroni_leader fact
       set_fact:
