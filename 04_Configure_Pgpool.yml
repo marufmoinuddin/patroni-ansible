@@ -57,7 +57,6 @@
       apt:
         name:
           - pgpool2
-          - postgresql-16-pgpool2
         state: present
         update_cache: yes
       when: ansible_os_family == "Debian"
