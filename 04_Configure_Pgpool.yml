@@ -120,16 +120,25 @@
         mode: '0640'
       notify: restart pgpool
 
-    # pcp.conf: plaintext passwords are accepted by Pgpool 4.x
-    - name: Create pcp.conf
+    # pcp.conf: requires MD5-hashed password (pgpool 4.x)
+    - name: Create pcp.conf (MD5-hashed password)
+      shell: |
+        HASH=$(pg_md5 {{ pcp_password }})
+        echo "{{ pcp_user }}:$HASH" > {{ pgpool_conf_dir }}/pcp.conf
+        chown postgres:postgres {{ pgpool_conf_dir }}/pcp.conf
+        chmod 0640 {{ pgpool_conf_dir }}/pcp.conf
+      changed_when: false
+      notify: restart pgpool
+
+    # .pcppass: plaintext credentials so pcp_* commands run non-interactively
+    - name: Create .pcppass file for PCP commands
       copy:
-        dest: "{{ pgpool_conf_dir }}/pcp.conf"
+        dest: "{{ pgpool_conf_dir }}/.pcppass"
         content: |
-          # USERID:PASSWORD
-          {{ pcp_user }}:{{ pcp_password }}
+          *:{{ pcp_port }}:{{ pcp_user }}:{{ pcp_password }}
         owner: postgres
         group: postgres
-        mode: '0640'
+        mode: '0600'
       notify: restart pgpool
 
     # pgpool_node_id: REQUIRED by Pgpool 4.7 (0,1,2 per node)
@@ -235,26 +244,30 @@
           follow_master_command = '{{ pgpool_conf_dir }}/follow_master.sh %d %h %p %D %m %H %M %P %r %R'
 
           # ----------------------------------------------------------------------
-          # WATCHDOG (High Availability)
+          # WATCHDOG (High Availability) - Pgpool 4.7+ parameter names
           # ----------------------------------------------------------------------
           use_watchdog = on
-          # All watchdog params must be indexed in Pgpool 4.5+ (wd_port0, wd_port1, wd_port2)
+          wd_lifecheck_method = heartbeat
+          wd_monitoring_interfaces_list = '{{ vip_interface }}'
+          # Watchdog nodes - indexed tuples, ALL 3 on EVERY node (Pgpool 4.7 format)
           {% for node in groups['pg_nodes'] %}
-          heartbeat_destination{{ loop.index0 }} = '{{ hostvars[node]['ansible_default_ipv4']['address'] }}'
-          heartbeat_destination_port{{ loop.index0 }} = {{ wd_port }}
-          heartbeat_interface{{ loop.index0 }} = '{{ vip_interface }}'
-          {% endfor %}
-
-          # Watchdog nodes - indexed tuples, ALL 3 on EVERY node (Pgpool 4.7 requirement)
-          {% for node in groups['pg_nodes'] %}
-          wd_hostname{{ loop.index0 }} = '{{ hostvars[node]['ansible_hostname'] }}'
+          hostname{{ loop.index0 }} = '{{ hostvars[node]['ansible_default_ipv4']['address'] }}'
           wd_port{{ loop.index0 }} = {{ wd_port }}
-          wd_priority{{ loop.index0 }} = {{ wd_priority_base + (3 - loop.index0) }}
-          wd_authkey{{ loop.index0 }} = ''
+          pgpool_port{{ loop.index0 }} = {{ pgpool_port }}
+          {% endfor %}
+          # Local node priority + auth key (single params, not indexed, in 4.7)
+          wd_priority = {{ wd_priority_base + (3 - (node_index | int)) }}
+          wd_authkey = ''
+
+          # Heartbeat lifecheck - 4.7 names (heartbeat_hostname/port/device)
+          {% for node in groups['pg_nodes'] %}
+          heartbeat_hostname{{ loop.index0 }} = '{{ hostvars[node]['ansible_default_ipv4']['address'] }}'
+          heartbeat_port{{ loop.index0 }} = {{ wd_port }}
+          heartbeat_device{{ loop.index0 }} = '{{ vip_interface }}'
           {% endfor %}
 
           # Virtual IP (VIP) management
-          delegate_IP = '{{ vip }}'
+          delegate_ip = '{{ vip }}'
           if_cmd_path = '{{ if_cmd_path }}'
           if_up_cmd = '{{ if_cmd_path }}/ip addr add {{ vip }}/{{ vip_cidr }} dev {{ vip_interface }} label {{ vip_interface }}:pgpool'
           if_down_cmd = '{{ if_cmd_path }}/ip addr del {{ vip }}/{{ vip_cidr }} dev {{ vip_interface }}'
@@ -438,24 +451,27 @@
           # ============================================================
 
           use_watchdog = on
-          # All watchdog params must be indexed in Pgpool 4.5+ (wd_port0, wd_port1, wd_port2)
-          # Heartbeat destinations (ALL 3 nodes on every node)
+          wd_lifecheck_method = heartbeat
+          wd_monitoring_interfaces_list = '{{ vip_interface }}'
+          # Watchdog nodes - indexed tuples, ALL 3 on EVERY node (Pgpool 4.7 format)
           {% for node in groups['pg_nodes'] %}
-          heartbeat_destination{{ loop.index0 }} = '{{ hostvars[node]['ansible_default_ipv4']['address'] }}'
-          heartbeat_destination_port{{ loop.index0 }} = {{ wd_port }}
-          {% endfor %}
-
-          # Watchdog node definitions (ALL 3 on every node; local node = pgpool_node_id)
-          {% for node in groups['pg_nodes'] %}
-          wd_hostname{{ loop.index0 }} = '{{ hostvars[node]['ansible_hostname'] }}'
+          hostname{{ loop.index0 }} = '{{ hostvars[node]['ansible_default_ipv4']['address'] }}'
           wd_port{{ loop.index0 }} = {{ wd_port }}
-          wd_priority{{ loop.index0 }} = {{ wd_priority_base + (3 - loop.index0) }}
-          wd_authkey{{ loop.index0 }} = ''
-          wd_delegate_IP{{ loop.index0 }} = '{{ vip }}'
+          pgpool_port{{ loop.index0 }} = {{ pgpool_port }}
+          {% endfor %}
+          # Local node priority + auth key (single params, not indexed, in 4.7)
+          wd_priority = {{ wd_priority_base + (3 - (node_index | int)) }}
+          wd_authkey = ''
+
+          # Heartbeat lifecheck - 4.7 names
+          {% for node in groups['pg_nodes'] %}
+          heartbeat_hostname{{ loop.index0 }} = '{{ hostvars[node]['ansible_default_ipv4']['address'] }}'
+          heartbeat_port{{ loop.index0 }} = {{ wd_port }}
+          heartbeat_device{{ loop.index0 }} = '{{ vip_interface }}'
           {% endfor %}
 
           # Virtual IP (VIP) management
-          delegate_IP = '{{ vip }}'
+          delegate_ip = '{{ vip }}'
           if_cmd_path = '{{ if_cmd_path }}'
           if_up_cmd = '{{ if_cmd_path }}/ip addr add {{ vip }}/{{ vip_cidr }} dev {{ vip_interface }} label {{ vip_interface }}:pgpool'
           if_down_cmd = '{{ if_cmd_path }}/ip addr del {{ vip }}/{{ vip_cidr }} dev {{ vip_interface }}'
