@@ -79,7 +79,7 @@
     - name: Calculate derived parameters (step 4b - needs _wal_3pct, _work_mem_raw_kb from step 4a)
       set_fact:
         # wal_buffers: min(16MB, 3% of shared_buffers) - use ternary to avoid min filter
-        pg_wal_buffers_kb: "{{ _wal_3pct if _wal_3pct < 16384 else 16384 }}"
+        pg_wal_buffers_kb: "{{ _wal_3pct if (_wal_3pct | int) < 16384 else 16384 }}"
         # Storage-aware settings (assume SSD for cloud VMs)
         pg_random_page_cost: 1.1
         pg_effective_io_concurrency: 200
