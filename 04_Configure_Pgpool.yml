@@ -242,6 +242,7 @@
           {% for node in groups['pg_nodes'] %}
           heartbeat_destination{{ loop.index0 }} = '{{ hostvars[node]['ansible_default_ipv4']['address'] }}'
           heartbeat_destination_port{{ loop.index0 }} = {{ wd_port }}
+          heartbeat_interface{{ loop.index0 }} = '{{ vip_interface }}'
           {% endfor %}
 
           # Watchdog nodes - indexed tuples, ALL 3 on EVERY node (Pgpool 4.7 requirement)
@@ -302,8 +303,6 @@
           sr_check_user = '{{ health_check_user }}'
           sr_check_password = '{{ health_check_password }}'
           sr_check_database = 'postgres'
-          sr_check_max_retries = 3
-          sr_check_retry_delay = 1
           # Health check
           health_check_period = 10
           health_check_timeout = 20
@@ -318,7 +317,7 @@
           # ----------------------------------------------------------------------
           failover_command = '{{ pgpool_conf_dir }}/failover.sh %d %h %p %D %m %H %M %P %r %R'
           failback_command = ''
-          follow_master_command = '{{ pgpool_conf_dir }}/follow_master.sh %d %h %p %D %m %H %M %P %r %R'
+          # follow_master_command = '{{ pgpool_conf_dir }}/follow_master.sh %d %h %p %D %m %H %M %P %r %R'
           failover_on_backend_error = on
           search_primary_node_timeout = 10
 
