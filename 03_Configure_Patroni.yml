@@ -27,11 +27,66 @@
         pg_ctl: "/usr/pgsql-{{ pg_version }}/bin/pg_ctl"
       when: ansible_os_family == "RedHat"
 
-    - name: Set cluster facts
+    # ============================================================
+    # PG TUNE: Calculate optimal PostgreSQL parameters based on VM resources
+    # Inspired by https://github.com/le0pard/pgtune
+    # ============================================================
+    - name: Gather system memory and CPU facts for pgtune calculation
+      setup:
+        filter: ansible_*memory*,ansible_processor*
+
+    - name: Calculate optimal PostgreSQL parameters (pgtune algorithm)
       set_fact:
-        node_name: "{{ ansible_hostname }}"
-        node_ip: "{{ ansible_default_ipv4.address }}"
-        is_primary: "{{ inventory_hostname == groups['pg_nodes'][0] }}"
+        # Memory in MB
+        total_ram_mb: "{{ ansible_memtotal_mb }}"
+        cpu_cores: "{{ ansible_processor_cores | default(ansible_processor_vcpus | default(4)) }}"
+        # pgtune calculations
+        pg_shared_buffers_mb: "{{ [ (ansible_memtotal_mb * 0.25) | int, 32768 ] | min }}"
+        pg_effective_cache_size_mb: "{{ (ansible_memtotal_mb * 0.75) | int }}"
+        pg_maintenance_work_mem_mb: "{{ 512 if ansible_memtotal_mb <= 4096 else (1024 if ansible_memtotal_mb <= 16384 else 2048) }}"
+        # max_connections: web/oltp workload default
+        pg_max_connections: "{{ [ 200, [ 100, (ansible_processor_cores | default(4) * 50) | int ] | max ] | min }}"
+        # work_mem: ensure total work_mem * max_connections * 2 < 25% RAM
+        pg_work_mem_kb: "{{ [ 4096, [ ( (ansible_memtotal_mb * 1024 * 0.25) / ( ([ 200, [ 100, (ansible_processor_cores | default(4) * 50) | int ] | max ] * 2 ) ) ) | int, 262144 ] | min ] | max }}"
+        # wal_buffers: min(16MB, 3% of shared_buffers)
+        pg_wal_buffers_kb: "{{ [ 16384, (pg_shared_buffers_mb * 1024 * 0.03) | int ] | min }}"
+        # WAL sizes
+        pg_min_wal_size_mb: 1024
+        pg_max_wal_size_mb: "{{ [ 4096, [ 1024, (ansible_memtotal_mb * 0.05) | int ] | max ] | min }}"
+        # Parallel settings
+        pg_max_worker_processes: "{{ [ ansible_processor_cores | default(4), 8 ] | min }}"
+        pg_max_parallel_workers_per_gather: "{{ [ (ansible_processor_cores | default(4) // 2), 4 ] | min }}"
+        pg_max_parallel_workers: "{{ [ ansible_processor_cores | default(4), 8 ] | min }}"
+        # Storage-aware settings (assume SSD for cloud VMs)
+        pg_random_page_cost: 1.1
+        pg_effective_io_concurrency: 200
+        # Checkpoint
+        pg_checkpoint_completion_target: 0.9
+        # JIT (PG 11+)
+        pg_jit: "{{ 'on' if (ansible_processor_cores | default(4)) >= 4 else 'off' }}"
+
+    - name: Display calculated PostgreSQL parameters
+      debug:
+        msg:
+          - "=== PG TUNE CALCULATED PARAMETERS ==="
+          - "Total RAM: {{ total_ram_mb }} MB"
+          - "CPU Cores: {{ cpu_cores }}"
+          - "shared_buffers: {{ pg_shared_buffers_mb }} MB"
+          - "effective_cache_size: {{ pg_effective_cache_size_mb }} MB"
+          - "maintenance_work_mem: {{ pg_maintenance_work_mem_mb }} MB"
+          - "work_mem: {{ pg_work_mem_kb }} kB"
+          - "max_connections: {{ pg_max_connections }}"
+          - "wal_buffers: {{ pg_wal_buffers_kb }} kB"
+          - "min_wal_size: {{ pg_min_wal_size_mb }} MB"
+          - "max_wal_size: {{ pg_max_wal_size_mb }} MB"
+          - "checkpoint_completion_target: {{ pg_checkpoint_completion_target }}"
+          - "random_page_cost: {{ pg_random_page_cost }}"
+          - "effective_io_concurrency: {{ pg_effective_io_concurrency }}"
+          - "max_worker_processes: {{ pg_max_worker_processes }}"
+          - "max_parallel_workers_per_gather: {{ pg_max_parallel_workers_per_gather }}"
+          - "max_parallel_workers: {{ pg_max_parallel_workers }}"
+          - "jit: {{ pg_jit }}"
+          - "=========================================="
 
     - name: Display OS-specific paths
       debug:
@@ -193,14 +248,49 @@
                     use_pg_rewind: true
                     use_slots: true
                     parameters:
+                        # --- PG TUNE CALCULATED PARAMETERS ---
+                        shared_buffers: "{{ pg_shared_buffers_mb }}MB"
+                        effective_cache_size: "{{ pg_effective_cache_size_mb }}MB"
+                        maintenance_work_mem: "{{ pg_maintenance_work_mem_mb }}MB"
+                        work_mem: "{{ pg_work_mem_kb }}kB"
+                        max_connections: {{ pg_max_connections }}
+                        wal_buffers: "{{ pg_wal_buffers_kb }}kB"
+                        min_wal_size: "{{ pg_min_wal_size_mb }}MB"
+                        max_wal_size: "{{ pg_max_wal_size_mb }}MB"
+                        checkpoint_completion_target: {{ pg_checkpoint_completion_target }}
+                        random_page_cost: {{ pg_random_page_cost }}
+                        effective_io_concurrency: {{ pg_effective_io_concurrency }}
+                        max_worker_processes: {{ pg_max_worker_processes }}
+                        max_parallel_workers_per_gather: {{ pg_max_parallel_workers_per_gather }}
+                        max_parallel_workers: {{ pg_max_parallel_workers }}
+                        parallel_leader_participation: on
+                        jit: {{ pg_jit }}
+                        # --- REPLICATION SETTINGS ---
                         wal_level: replica
                         hot_standby: "on"
-                        wal_keep_segments: 10
-                        max_wal_senders: 5
-                        max_replication_slots: 10
+                        max_wal_senders: 10
+                        max_replication_slots: 20
                         wal_log_hints: "on"
+                        wal_keep_size: "1GB"
+                        # --- LOGGING ---
                         logging_collector: 'on'
-                        max_wal_size: '10GB'
+                        log_destination: 'stderr'
+                        log_min_duration_statement: 1000
+                        log_checkpoints: on
+                        log_connections: on
+                        log_disconnections: on
+                        log_lock_waits: on
+                        log_temp_files: 0
+                        log_autovacuum_min_duration: 0
+                        # --- AUTOVACUUM ---
+                        autovacuum: 'on'
+                        autovacuum_max_workers: 3
+                        autovacuum_naptime: 30s
+                        autovacuum_vacuum_threshold: 50
+                        autovacuum_analyze_threshold: 50
+                        autovacuum_vacuum_scale_factor: 0.1
+                        autovacuum_analyze_scale_factor: 0.05
+                        # --- ARCHIVE ---
                         archive_mode: "on"
                         archive_timeout: 600s
                         archive_command: "cp -f %p /postgres/pgbackup/kyc/archive/%f"

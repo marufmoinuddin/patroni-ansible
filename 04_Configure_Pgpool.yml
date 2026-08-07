@@ -261,31 +261,86 @@
           arping_cmd = '{{ arping_path }}/arping -U {{ vip }} -w 1 -I {{ vip_interface }}'
 
           # ----------------------------------------------------------------------
-          # POOLING SETTINGS
+          # POOLING SETTINGS (Production tuned)
           # ----------------------------------------------------------------------
-          num_init_children = 32
+          # num_init_children: max concurrent child processes
+          # For web workload: 32-64, for OLTP: 64-128
+          num_init_children = 64
+          # max_pool: max connections per child (per database/user)
           max_pool = 4
-          child_life_time = 300
-          child_max_connections = 0
+          # Connection lifecycle
+          child_life_time = 3600
+          child_max_connections = 1000
           connection_life_time = 0
-          client_idle_limit = 0
+          client_idle_limit = 300
+          # Reset query to clean session state
+          reset_query_list = 'ABORT; DISCARD ALL'
 
           # ----------------------------------------------------------------------
-          # LOGGING
+          # LOGGING (Production ready)
           # ----------------------------------------------------------------------
           log_destination = 'stderr'
           log_line_prefix = '%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h '
           log_connections = on
           log_hostname = off
-          log_statement = off
-          log_per_node_statement = off
-          log_standby_delay = 'if_over_threshold'
+          log_statement = 'ddl'
+          log_per_node_statement = on
+          log_standby_delay = 'always'
+          log_min_messages = 'info'
 
           # ----------------------------------------------------------------------
           # FILE LOCATIONS
           # ----------------------------------------------------------------------
           pid_file_name = '/var/run/pgpool/{{ pgpool_service_name }}.pid'
           logdir = '{{ pgpool_log_dir }}'
+
+          # ----------------------------------------------------------------------
+          # HEALTH CHECK SETTINGS (Optimized for Patroni)
+          # ----------------------------------------------------------------------
+          # Streaming replication check
+          sr_check_period = 5
+          sr_check_user = '{{ health_check_user }}'
+          sr_check_password = '{{ health_check_password }}'
+          sr_check_database = 'postgres'
+          sr_check_max_retries = 3
+          sr_check_retry_delay = 1
+          # Health check
+          health_check_period = 10
+          health_check_timeout = 20
+          health_check_user = '{{ health_check_user }}'
+          health_check_password = '{{ health_check_password }}'
+          health_check_database = 'postgres'
+          health_check_max_retries = 3
+          health_check_retry_delay = 1
+
+          # ----------------------------------------------------------------------
+          # FAILOVER SETTINGS
+          # ----------------------------------------------------------------------
+          failover_command = '{{ pgpool_conf_dir }}/failover.sh %d %h %p %D %m %H %M %P %r %R'
+          failback_command = ''
+          follow_master_command = '{{ pgpool_conf_dir }}/follow_master.sh %d %h %p %D %m %H %M %P %r %R'
+          failover_on_backend_error = on
+          search_primary_node_timeout = 10
+
+          # ----------------------------------------------------------------------
+          # SSL (Enable for production with certs)
+          # ----------------------------------------------------------------------
+          ssl = off
+          # ssl_cert = '/etc/pgpool-II/certs/server.crt'
+          # ssl_key = '/etc/pgpool-II/certs/server.key'
+          # ssl_ca_cert = '/etc/pgpool-II/certs/ca.crt'
+
+          # ----------------------------------------------------------------------
+          # MEMORY/QUERY CACHE
+          # ----------------------------------------------------------------------
+          memory_cache_enabled = off
+          # memqcache_method = 'shmem'
+          # memqcache_max_num_cache = 1000000
+          # memqcache_expire = 300
+          # memqcache_auto_cache_invalidation = on
+          # memqcache_maxcache = 4096
+          # memqcache_cache_block_size = 1048576
+          # memqcache_oiddir = '/var/log/pgpool/oiddir'
 
           # ----------------------------------------------------------------------
           # EXTENSIONS
