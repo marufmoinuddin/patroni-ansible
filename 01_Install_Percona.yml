@@ -338,6 +338,34 @@
         state: present
       when: ansible_os_family == "Debian"
 
+    - name: Enable CRB (CodeReady Builder) repo (RHEL/CentOS)
+      ansible.builtin.shell: dnf config-manager --set-enabled crb
+      when: ansible_os_family == "RedHat"
+      changed_when: false
+      register: enable_crb
+      ignore_errors: true
+
+    - name: Install EPEL repo (RHEL/CentOS) - provides libssh2/libmemcached deps
+      ansible.builtin.dnf:
+        name: epel-release
+        state: present
+        disable_gpg_check: true
+      when: ansible_os_family == "RedHat"
+
+    - name: Install libssh2 and libmemcached (RHEL/CentOS)
+      ansible.builtin.dnf:
+        name:
+          - libssh2
+          - libmemcached
+        state: present
+        disable_gpg_check: true
+      when: ansible_os_family == "RedHat"
+
+    - name: Refresh the dnf cache after enabling repos (RHEL/CentOS)
+      ansible.builtin.dnf:
+        update_cache: yes
+      when: ansible_os_family == "RedHat"
+
     - name: Install ETCD, Patroni, and pgBackRest packages (RHEL/CentOS)
       ansible.builtin.dnf:
         name:
