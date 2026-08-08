@@ -233,7 +233,7 @@
     - variables.yaml
   vars:
     pg_pmm_user_password: "{{ pg_pmm_user_password }}"
-    pmm_server_host: "{{ hostvars[groups['pg_backrest'][0]]['ansible_default_ipv4']['address'] }}"
+    pmm_server_host: "{{ hostvars[groups['pg_backrest'][0]]['ansible_host'] }}"
     pmm_admin_password: "{{ pmm_admin_password }}"
     pmm_server_port: 443
     scope: "{{ patroni_scope }}"
@@ -318,7 +318,7 @@
     - variables.yaml
   vars:
     pg_pmm_user_password: "{{ pg_pmm_user_password }}"
-    pmm_server_host: "{{ hostvars[groups['pg_backrest'][0]]['ansible_default_ipv4']['address'] }}"
+    pmm_server_host: "{{ hostvars[groups['pg_backrest'][0]]['ansible_host'] }}"
     pmm_admin_password: "{{ pmm_admin_password }}"
     pmm_server_port: 443
 
