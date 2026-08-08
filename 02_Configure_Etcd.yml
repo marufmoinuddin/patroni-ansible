@@ -7,18 +7,17 @@
     - variables.yaml
 
   tasks:
-    - name: Install ETCD package (Debian/Ubuntu)
-      ansible.builtin.apt:
-        name: etcd
-        state: present
-        update_cache: yes
-      when: ansible_os_family == "Debian"
+    - name: Check if etcd is already installed
+      ansible.builtin.command: which etcd
+      register: etcd_check
+      changed_when: false
+      failed_when: false
 
-    - name: Install ETCD package (RHEL/CentOS)
+    - name: Install ETCD package (RHEL/CentOS) - only if not already installed
       ansible.builtin.dnf:
         name: etcd
         state: present
-      when: ansible_os_family == "RedHat"
+      when: ansible_os_family == "RedHat" and etcd_check.rc != 0
 
     - name: Create ETCD data directory
       ansible.builtin.file:
@@ -37,38 +36,14 @@
       when: etcd_stale.files | length > 0
       changed_when: true
 
+    - name: Set ETCD cluster string (simple approach)
+      ansible.builtin.set_fact:
+        etcd_cluster: "centos-patroni-1=http://192.168.122.200:2380,centos-patroni-2=http://192.168.122.201:2380,centos-patroni-3=http://192.168.122.202:2380"
+
     - name: Create systemd service file
-      ansible.builtin.copy:
+      ansible.builtin.template:
+        src: etcd.service.j2
         dest: /etc/systemd/system/etcd.service
-        content: |
-          [Unit]
-          Description=etcd key-value store
-          Documentation=https://etcd.io/docs/
-          After=network.target
-
-          [Service]
-          Environment="TOKEN={{ etcd_token }}"
-          Environment="CLUSTER_STATE=new"
-          Environment="THIS_NAME={{ ansible_hostname }}"
-          Environment="THIS_IP={{ ansible_default_ipv4.address }}"
-          Environment="CLUSTER={% for host in groups['pg_nodes'] %}{{ hostvars[host]['ansible_hostname'] }}=http://{{ hostvars[host]['ansible_default_ipv4']['address'] }}:2380{% if not loop.last %},{% endif %}{% endfor %}"
-
-          ExecStart=/usr/bin/etcd \
-            --data-dir={{ etcd_data_dir }} \
-            --name {{ ansible_hostname }} \
-            --initial-advertise-peer-urls http://{{ ansible_default_ipv4.address }}:2380 \
-            --listen-peer-urls http://{{ ansible_default_ipv4.address }}:2380 \
-            --advertise-client-urls http://{{ ansible_default_ipv4.address }}:2379 \
-            --listen-client-urls http://{{ ansible_default_ipv4.address }}:2379 \
-            --initial-cluster ${CLUSTER} \
-            --initial-cluster-state ${CLUSTER_STATE} \
-            --initial-cluster-token ${TOKEN}
-
-          Restart=always
-          RestartSec=5
-
-          [Install]
-          WantedBy=multi-user.target
         mode: '0644'
 
     - name: Reload systemd configuration

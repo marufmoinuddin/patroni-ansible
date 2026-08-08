@@ -1,10 +1,10 @@
 [pg_nodes]
-percona-node-1 ansible_host=192.168.122.150 ansible_user=root
-percona-node-2 ansible_host=192.168.122.151 ansible_user=root
-percona-node-3 ansible_host=192.168.122.152 ansible_user=root
+centos-patroni-1 ansible_host=192.168.122.200 ansible_user=root
+centos-patroni-2 ansible_host=192.168.122.201 ansible_user=root
+centos-patroni-3 ansible_host=192.168.122.202 ansible_user=root
 
 [pg_backrest]
-percona-pgbackrest ansible_host=192.168.122.153 ansible_user=root
+centos-patroni-4 ansible_host=192.168.122.203 ansible_user=root
 
 [all:children]
 pg_nodes
