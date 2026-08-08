@@ -81,14 +81,28 @@
         update_cache: yes
       when: ansible_os_family == "Debian"
 
-    - name: Enable CRB (CodeReady Builder) repo for libssh2 (RHEL/CentOS)
+    - name: Enable CRB (CodeReady Builder) repo (RHEL/CentOS)
       ansible.builtin.shell: dnf config-manager --set-enabled crb
       when: ansible_os_family == "RedHat"
       changed_when: false
       register: enable_crb
       ignore_errors: true
 
-    - name: Refresh dnf cache after enabling CRB (RHEL/CentOS)
+    - name: Install EPEL repo (provides libssh2 on RHEL/CentOS 9)
+      ansible.builtin.dnf:
+        name: epel-release
+        state: present
+        disable_gpg_check: true
+      when: ansible_os_family == "RedHat"
+
+    - name: Install libssh2 dependency (RHEL/CentOS)
+      ansible.builtin.dnf:
+        name: libssh2
+        state: present
+        disable_gpg_check: true
+      when: ansible_os_family == "RedHat"
+
+    - name: Refresh dnf cache after enabling repos (RHEL/CentOS)
       ansible.builtin.dnf:
         update_cache: yes
       when: ansible_os_family == "RedHat"
@@ -269,14 +283,28 @@
         update_cache: yes
       when: ansible_os_family == "Debian"
 
-    - name: Enable CRB (CodeReady Builder) repo for libssh2 (RHEL/CentOS, pg_nodes)
+    - name: Enable CRB (CodeReady Builder) repo (RHEL/CentOS, pg_nodes)
       ansible.builtin.shell: dnf config-manager --set-enabled crb
       when: ansible_os_family == "RedHat"
       changed_when: false
       register: enable_crb
       ignore_errors: true
 
-    - name: Refresh dnf cache after enabling CRB (RHEL/CentOS, pg_nodes)
+    - name: Install EPEL repo (provides libssh2 on RHEL/CentOS 9, pg_nodes)
+      ansible.builtin.dnf:
+        name: epel-release
+        state: present
+        disable_gpg_check: true
+      when: ansible_os_family == "RedHat"
+
+    - name: Install libssh2 dependency (RHEL/CentOS, pg_nodes)
+      ansible.builtin.dnf:
+        name: libssh2
+        state: present
+        disable_gpg_check: true
+      when: ansible_os_family == "RedHat"
+
+    - name: Refresh dnf cache after enabling repos (RHEL/CentOS, pg_nodes)
       ansible.builtin.dnf:
         update_cache: yes
       when: ansible_os_family == "RedHat"
