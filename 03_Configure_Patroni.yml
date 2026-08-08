@@ -331,7 +331,8 @@
                         # --- ARCHIVE ---
                         archive_mode: "on"
                         archive_timeout: 600s
-                        archive_command: "cp -f %p /postgres/pgbackup/kyc/archive/%f"
+                        archive_command: "pgbackrest --stanza=kyc archive-push %p"
+                        restore_command: "pgbackrest --stanza=kyc archive-get %f %p"
 
             initdb:
                 - encoding: UTF8
