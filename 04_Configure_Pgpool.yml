@@ -343,10 +343,10 @@
           # Local node priority + auth key (single params, not indexed, in 4.7)
           wd_priority = {{ wd_priority_base + (3 - (node_index | int)) }}
           wd_authkey = ''
-          # Heartbeat lifecheck - 4.7 names
+          # Heartbeat lifecheck - 4.7 names (heartbeat_port MUST differ from wd_port)
           {% for node in groups['pg_nodes'] %}
           heartbeat_hostname{{ loop.index0 }} = '{{ hostvars[node]['ansible_host'] }}'
-          heartbeat_port{{ loop.index0 }} = {{ wd_port }}
+          heartbeat_port{{ loop.index0 }} = {{ heartbeat_port }}
           heartbeat_device{{ loop.index0 }} = '{{ vip_interface }}'
           {% endfor %}
           delegate_ip = '{{ vip }}'
@@ -670,10 +670,10 @@
           wd_priority = {{ wd_priority_base + (3 - (node_index | int)) }}
           wd_authkey = ''
 
-          # Heartbeat lifecheck - 4.7 names
+          # Heartbeat lifecheck - 4.7 names (heartbeat_port MUST differ from wd_port)
           {% for node in groups['pg_nodes'] %}
           heartbeat_hostname{{ loop.index0 }} = '{{ hostvars[node]['ansible_host'] }}'
-          heartbeat_port{{ loop.index0 }} = {{ wd_port }}
+          heartbeat_port{{ loop.index0 }} = {{ heartbeat_port }}
           heartbeat_device{{ loop.index0 }} = '{{ vip_interface }}'
           {% endfor %}
 
@@ -696,11 +696,17 @@
         state: directory
         mode: '0755'
 
-    - name: Create systemd override (VIP capabilities + fast stop)
+    - name: Create systemd override (VIP capabilities + fast stop + root for heartbeat)
       copy:
         dest: /etc/systemd/system/{{ pgpool_service_name }}.service.d/override.conf
         content: |
           [Service]
+          # Pgpool watchdog heartbeat requires euid=0 for SO_BINDTODEVICE
+          # (pgpool checks geteuid(), capabilities are NOT sufficient)
+          {% if ansible_os_family == "RedHat" %}
+          User=root
+          Group=root
+          {% endif %}
           # Allow pgpool to manage VIP via ip/arping
           CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_DAC_OVERRIDE
           AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_DAC_OVERRIDE
