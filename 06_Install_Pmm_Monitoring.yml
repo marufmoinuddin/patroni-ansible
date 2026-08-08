@@ -80,6 +80,13 @@
         state: present
       when: ansible_os_family == "Debian"
 
+    - name: Remove podman-docker (conflicts with docker-ce on RHEL/CentOS)
+      package:
+        name: podman-docker
+        state: absent
+      when: ansible_os_family == "RedHat"
+      ignore_errors: true
+
     - name: Install Docker (RHEL/CentOS)
       package:
         name:
