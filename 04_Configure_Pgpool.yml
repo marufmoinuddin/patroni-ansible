@@ -36,8 +36,8 @@
   tasks:
     - name: Set node-specific facts
       set_fact:
-        node_name: "{{ ansible_hostname }}"
-        node_ip: "{{ ansible_default_ipv4.address }}"
+        node_name: "{{ inventory_hostname }}"
+        node_ip: "{{ ansible_host }}"
         node_index: "{{ groups['pg_nodes'].index(inventory_hostname) + 1 }}"
         is_first_node: "{{ inventory_hostname == groups['pg_nodes'][0] }}"
         # Auto-detect the default NIC (eth0 on CentOS Stream 9, enp3s0 on
@@ -174,6 +174,7 @@
         content: |
           {{ pgpool_admin_user }}:{{ pgpool_admin_password }}
           {{ health_check_user }}:{{ health_check_password }}
+          postgres:{{ postgres_password }}
         owner: postgres
         group: postgres
         mode: '0640'
@@ -255,7 +256,7 @@
           # BACKEND NODES (Patroni-managed PostgreSQL instances)
           # ----------------------------------------------------------------------
           {% for node in groups['pg_nodes'] %}
-          backend_hostname{{ loop.index0 }} = '{{ hostvars[node]['ansible_default_ipv4']['address'] }}'
+          backend_hostname{{ loop.index0 }} = '{{ hostvars[node]['ansible_host'] }}'
           backend_port{{ loop.index0 }} = 5432
           backend_weight{{ loop.index0 }} = 1
           backend_data_directory{{ loop.index0 }} = '{{ data_dir }}'
@@ -313,7 +314,7 @@
           wd_monitoring_interfaces_list = '{{ vip_interface }}'
           # Watchdog nodes (hostnameN, wd_portN, pgpool_portN - same as 4.7)
           {% for node in groups['pg_nodes'] %}
-          hostname{{ loop.index0 }} = '{{ hostvars[node]['ansible_default_ipv4']['address'] }}'
+          hostname{{ loop.index0 }} = '{{ hostvars[node]['ansible_host'] }}'
           wd_port{{ loop.index0 }} = {{ wd_port }}
           pgpool_port{{ loop.index0 }} = {{ pgpool_port }}
           {% endfor %}
@@ -322,7 +323,7 @@
           wd_authkey = ''
           # Heartbeat lifecheck (heartbeat_hostnameN/portN/deviceN - same as 4.7)
           {% for node in groups['pg_nodes'] %}
-          heartbeat_hostname{{ loop.index0 }} = '{{ hostvars[node]['ansible_default_ipv4']['address'] }}'
+          heartbeat_hostname{{ loop.index0 }} = '{{ hostvars[node]['ansible_host'] }}'
           heartbeat_port{{ loop.index0 }} = {{ wd_port }}
           heartbeat_device{{ loop.index0 }} = '{{ vip_interface }}'
           {% endfor %}
@@ -335,7 +336,7 @@
           wd_monitoring_interfaces_list = '{{ vip_interface }}'
           # Watchdog nodes - indexed tuples (Pgpool 4.7 format)
           {% for node in groups['pg_nodes'] %}
-          hostname{{ loop.index0 }} = '{{ hostvars[node]['ansible_default_ipv4']['address'] }}'
+          hostname{{ loop.index0 }} = '{{ hostvars[node]['ansible_host'] }}'
           wd_port{{ loop.index0 }} = {{ wd_port }}
           pgpool_port{{ loop.index0 }} = {{ pgpool_port }}
           {% endfor %}
@@ -344,7 +345,7 @@
           wd_authkey = ''
           # Heartbeat lifecheck - 4.7 names
           {% for node in groups['pg_nodes'] %}
-          heartbeat_hostname{{ loop.index0 }} = '{{ hostvars[node]['ansible_default_ipv4']['address'] }}'
+          heartbeat_hostname{{ loop.index0 }} = '{{ hostvars[node]['ansible_host'] }}'
           heartbeat_port{{ loop.index0 }} = {{ wd_port }}
           heartbeat_device{{ loop.index0 }} = '{{ vip_interface }}'
           {% endfor %}
@@ -454,7 +455,9 @@
         content: |
           #!/bin/bash
           # Failover script for Pgpool-II with Patroni
-          # Called when a backend node fails
+          # Called when a backend node fails (runs as postgres user)
+          # Purpose: re-attach the new Patroni primary so pgpool routes writes
+          # to the correct node after a failover.
 
           FAILED_NODE_ID=$1
           FAILED_NODE_HOST=$2
@@ -469,17 +472,59 @@
 
           LOG_FILE="{{ pgpool_log_dir }}/failover.log"
           PATRONI_CONFIG="/etc/patroni/patroni.yml"
+          PCP_USER="{{ pcp_user }}"
+          PCP_PASS="{{ pcp_password }}"
+          PCP_PORT={{ pcp_port }}
 
           exec >> "$LOG_FILE" 2>&1
           echo "$(date): Failover triggered - Failed node: $FAILED_NODE_ID ($FAILED_NODE_HOST), New master: $NEW_MASTER_ID ($NEW_MASTER_HOST)"
 
-          if [ "$FAILED_NODE_ID" = "$OLD_MASTER_ID" ]; then
-              echo "$(date): Primary failed, Patroni handles leader election via etcd"
+          # Wait for Patroni to complete leader election (etcd sync).
+          # Poll until the leader is stable and has a non-empty host IP.
+          # Patroni can report the OLD leader briefly after a hard kill, so
+          # skip any result whose Host is empty or equals the failed node.
+          NEW_LEADER=""
+          NEW_LEADER_IP=""
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
               sleep 5
-              NEW_LEADER=$(su - postgres -c "patronictl -c $PATRONI_CONFIG list -f json 2>/dev/null | jq -r '.[] | select(.Role==\"Leader\") | .Member'")
-              echo "$(date): New Patroni leader: $NEW_LEADER"
-          else
-              echo "$(date): Replica failed - no action needed"
+              NEW_LEADER=$(patronictl -c $PATRONI_CONFIG list -f json 2>/dev/null | jq -r '.[] | select(.Role=="Leader") | .Member')
+              NEW_LEADER_IP=$(patronictl -c $PATRONI_CONFIG list -f json 2>/dev/null | jq -r '.[] | select(.Role=="Leader") | .Host')
+              # Accept only a non-empty, non-failed, non-null leader
+              if [ -n "$NEW_LEADER" ] && [ "$NEW_LEADER" != "null" ] && [ -n "$NEW_LEADER_IP" ] && [ "$NEW_LEADER_IP" != "null" ] && [ "$NEW_LEADER_IP" != "$FAILED_NODE_HOST" ]; then
+                  echo "$(date): Leader candidate after poll $attempt: $NEW_LEADER ($NEW_LEADER_IP)"
+                  break
+              fi
+              NEW_LEADER=""
+              NEW_LEADER_IP=""
+          done
+
+          if [ -z "$NEW_LEADER" ]; then
+              echo "$(date): ERROR - could not determine new Patroni leader after 50s; cluster may be without quorum"
+              exit 1
+          fi
+
+          # Map leader IP -> node id using pgpool.conf backend_hostname entries
+          NODE_ID=""
+          for idx in 0 1 2 3 4 5; do
+              B_HOST=$(grep -E "^backend_hostname$idx\s*=" {{ pgpool_conf_dir }}/pgpool.conf | sed -E "s/.*=\s*'([^']+)'.*/\1/")
+              if [ -n "$B_HOST" ] && [ "$B_HOST" = "$NEW_LEADER_IP" ]; then
+                  NODE_ID=$idx
+                  break
+              fi
+          done
+
+          if [ -z "$NODE_ID" ]; then
+              echo "$(date): ERROR - could not map leader $NEW_LEADER ($NEW_LEADER_IP) to a pgpool backend node id"
+              exit 1
+          fi
+
+          echo "$(date): Attaching node $NODE_ID ($NEW_LEADER) as primary"
+          PCPPASSFILE={{ pgpool_conf_dir }}/.pcppass pcp_attach_node -h localhost -U $PCP_USER -p $PCP_PORT $NODE_ID
+
+          # If the failed node is not the old primary, detach it (pgpool usually does this itself)
+          if [ "$FAILED_NODE_ID" != "$OLD_MASTER_ID" ]; then
+              echo "$(date): Detaching failed replica node $FAILED_NODE_ID"
+              PCPPASSFILE={{ pgpool_conf_dir }}/.pcppass pcp_detach_node -h localhost -U $PCP_USER -p $PCP_PORT $FAILED_NODE_ID
           fi
 
           exit 0
@@ -512,10 +557,89 @@
           echo "$(date): Follow master triggered - New master: $NEW_MASTER_ID ($NEW_MASTER_HOST)"
 
           sleep 3
-          NEW_LEADER=$(su - postgres -c "patronictl -c $PATRONI_CONFIG list -f json 2>/dev/null | jq -r '.[] | select(.Role==\"Leader\") | .Member'")
+          NEW_LEADER=$(patronictl -c $PATRONI_CONFIG list -f json 2>/dev/null | jq -r '.[] | select(.Role=="Leader") | .Member')
           echo "$(date): Confirmed Patroni leader: $NEW_LEADER"
 
           exit 0
+
+    # ============================================================
+    # 5b. AUTO-REATTACH WATCHDOG (systemd timer)
+    # ============================================================
+    # pgpool never re-attaches a backend node that comes back after
+    # being marked down during failover. This timer periodically
+    # checks pcp_node_info and re-attaches any node whose backend is
+    # up (pg_status=up) but pgpool still marks down (status=down).
+    # The pcp_node_info format is:
+    #   host port status_code weight status pg_status role pg_role ...
+    #   status_code: 2=up, 3=down; status/pg_status: up/down
+    - name: Deploy auto-reattach script
+      copy:
+        dest: "{{ pgpool_conf_dir }}/reattach_nodes.sh"
+        owner: postgres
+        group: postgres
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          # Re-attach pgpool backend nodes that have recovered but are
+          # still marked down by pgpool (e.g. after a Patroni rejoin).
+          # Runs as postgres (systemd timer), uses .pcppass for PCP auth.
+
+          PCP_PORT={{ pcp_port }}
+          PCP_USER={{ pcp_user }}
+          export PCPPASSFILE={{ pgpool_conf_dir }}/.pcppass
+          LOG_FILE="{{ pgpool_log_dir }}/reattach.log"
+
+          # Number of backends to check (max 6, covers 3-node + backup)
+          for idx in 0 1 2 3 4 5; do
+              LINE=$(pcp_node_info -h localhost -p $PCP_PORT -U $PCP_USER -w $idx 2>/dev/null)
+              [ -z "$LINE" ] && continue
+              # fields: host port status_code weight status pg_status role pg_role ...
+              STATUS=$(echo "$LINE" | awk '{print $5}')
+              PG_STATUS=$(echo "$LINE" | awk '{print $6}')
+              HOST=$(echo "$LINE" | awk '{print $1}')
+              if [ "$STATUS" = "down" ] && [ "$PG_STATUS" = "up" ]; then
+                  echo "$(date): Re-attaching node $idx ($HOST) - backend up, pgpool marked down"
+                  pcp_attach_node -h localhost -p $PCP_PORT -U $PCP_USER -w $idx >> "$LOG_FILE" 2>&1
+              fi
+          done
+
+          exit 0
+
+    - name: Deploy auto-reattach systemd service
+      copy:
+        dest: /etc/systemd/system/pgpool-reattach.service
+        content: |
+          [Unit]
+          Description=Re-attach recovered pgpool backend nodes
+          After=network.target
+
+          [Service]
+          Type=oneshot
+          User=postgres
+          Group=postgres
+          ExecStart={{ pgpool_conf_dir }}/reattach_nodes.sh
+
+    - name: Deploy auto-reattach systemd timer
+      copy:
+        dest: /etc/systemd/system/pgpool-reattach.timer
+        content: |
+          [Unit]
+          Description=Periodically re-attach recovered pgpool backend nodes
+
+          [Timer]
+          OnBootSec=60
+          OnUnitActiveSec=15
+          Unit=pgpool-reattach.service
+
+          [Install]
+          WantedBy=timers.target
+
+    - name: Enable auto-reattach timer
+      systemd:
+        name: pgpool-reattach.timer
+        enabled: yes
+        state: started
+        daemon_reload: yes
 
     # ============================================================
     # 6. CONFIGURE WATCHDOG - OS-conditional
@@ -538,7 +662,7 @@
           wd_monitoring_interfaces_list = '{{ vip_interface }}'
           # Watchdog nodes - indexed tuples, ALL 3 on EVERY node (Pgpool 4.7 format)
           {% for node in groups['pg_nodes'] %}
-          hostname{{ loop.index0 }} = '{{ hostvars[node]['ansible_default_ipv4']['address'] }}'
+          hostname{{ loop.index0 }} = '{{ hostvars[node]['ansible_host'] }}'
           wd_port{{ loop.index0 }} = {{ wd_port }}
           pgpool_port{{ loop.index0 }} = {{ pgpool_port }}
           {% endfor %}
@@ -548,7 +672,7 @@
 
           # Heartbeat lifecheck - 4.7 names
           {% for node in groups['pg_nodes'] %}
-          heartbeat_hostname{{ loop.index0 }} = '{{ hostvars[node]['ansible_default_ipv4']['address'] }}'
+          heartbeat_hostname{{ loop.index0 }} = '{{ hostvars[node]['ansible_host'] }}'
           heartbeat_port{{ loop.index0 }} = {{ wd_port }}
           heartbeat_device{{ loop.index0 }} = '{{ vip_interface }}'
           {% endfor %}
