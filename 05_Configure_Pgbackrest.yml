@@ -81,6 +81,18 @@
         update_cache: yes
       when: ansible_os_family == "Debian"
 
+    - name: Enable CRB (CodeReady Builder) repo for libssh2 (RHEL/CentOS)
+      ansible.builtin.shell: dnf config-manager --set-enabled crb
+      when: ansible_os_family == "RedHat"
+      changed_when: false
+      register: enable_crb
+      ignore_errors: true
+
+    - name: Refresh dnf cache after enabling CRB (RHEL/CentOS)
+      ansible.builtin.dnf:
+        update_cache: yes
+      when: ansible_os_family == "RedHat"
+
     - name: Install pgBackRest (RHEL/CentOS)
       dnf:
         name: percona-pgbackrest
@@ -256,6 +268,18 @@
         state: present
         update_cache: yes
       when: ansible_os_family == "Debian"
+
+    - name: Enable CRB (CodeReady Builder) repo for libssh2 (RHEL/CentOS, pg_nodes)
+      ansible.builtin.shell: dnf config-manager --set-enabled crb
+      when: ansible_os_family == "RedHat"
+      changed_when: false
+      register: enable_crb
+      ignore_errors: true
+
+    - name: Refresh dnf cache after enabling CRB (RHEL/CentOS, pg_nodes)
+      ansible.builtin.dnf:
+        update_cache: yes
+      when: ansible_os_family == "RedHat"
 
     - name: Install pgBackRest (RHEL/CentOS)
       dnf:
